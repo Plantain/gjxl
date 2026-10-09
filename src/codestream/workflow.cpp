@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
 #include <arm_neon.h>
 #endif
 
@@ -1304,7 +1304,7 @@ ComputeQuantizationMatrixScaleStatsFromFiniteOpsin(
 
   QuantizationMatrixScaleStats candidate;
   if (opsin.width() > 1 && opsin.height() > 1) {
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
     float32x4_t vector_x_edge = vdupq_n_f32(0.0f);
     float32x4_t vector_b_edge = vdupq_n_f32(0.0f);
     float32x4_t vector_exposed_blue = vdupq_n_f32(0.0f);
@@ -1318,7 +1318,7 @@ ComputeQuantizationMatrixScaleStatsFromFiniteOpsin(
       const float* previous_row_y = opsin.plane[1].Row(y - 1);
       const float* previous_row_b = opsin.plane[2].Row(y - 1);
       size_t x = 1;
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
       for (; x + 4 <= opsin.width(); x += 4) {
         const float32x4_t current_x = vld1q_f32(row_x + x);
         const float32x4_t current_y = vld1q_f32(row_y + x);
@@ -1388,7 +1388,7 @@ ComputeQuantizationMatrixScaleStatsFromFiniteOpsin(
         }
       }
     }
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
     std::array<float, 4> lanes{};
     vst1q_f32(lanes.data(), vector_x_edge);
     candidate.x_edge = std::max(

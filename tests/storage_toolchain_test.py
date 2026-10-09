@@ -5,6 +5,7 @@
 
 import argparse
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -37,9 +38,9 @@ def main():
     # Load the library first, then alter its identity in this translation unit.
     # No production escape hatch is introduced to admit an unknown library.
     cases = ([
-        ("_MSC_VER", "1938", "audited MSVC 19.37/STL 143 update 202305"),
-        ("_MSVC_STL_VERSION", "999", "audited MSVC 19.37/STL 143 update 202305"),
-        ("_MSVC_STL_UPDATE", "999999L", "audited MSVC 19.37/STL 143 update 202305"),
+        ("_MSC_VER", "1938", "an audited MSVC/STL pairing"),
+        ("_MSVC_STL_VERSION", "999", "an audited MSVC/STL pairing"),
+        ("_MSVC_STL_UPDATE", "999999L", "an audited MSVC/STL pairing"),
         ("_MSVC_STL_VERSION", None, "an audited standard library"),
         ("_ITERATOR_DEBUG_LEVEL", "2", "MSVC iterator debug level 0"),
     ] if msvc else [
@@ -63,12 +64,19 @@ def main():
         cases.append(("__apple_build_version__", other_compiler, "audited Apple Clang/libc++ pairing"))
     with tempfile.TemporaryDirectory(prefix="gjxl-storage-header-") as directory:
         source_path = Path(directory) / "probe.cpp"
+        msvc_cxx23 = "c++latest"
+        if msvc:
+            source_path.write_text("GJXL_COMPILER_VERSION _MSC_VER\n")
+            version = subprocess.run([args.compiler, "/nologo", "/EP", str(source_path)],
+                                     text=True, capture_output=True, check=True, timeout=45).stdout
+            if int(re.search(r"GJXL_COMPILER_VERSION\s+(\d+)", version).group(1)) == 1944:
+                msvc_cxx23 = "c++23preview"
 
         def compile_header(source, mode, diagnostic=None):
             source_path.write_text(source)
             if msvc:
                 command = [args.compiler, "/nologo", "/Zs", "/EHsc", "/MD",
-                           "/DNDEBUG", "/std:" + ("c++latest" if mode == "c++23" else mode),
+                           "/DNDEBUG", "/std:" + (msvc_cxx23 if mode == "c++23" else mode),
                            "/I" + str(root / "src"), str(source_path)]
             else:
                 command = [args.compiler, "-fsyntax-only", "-std=" + mode,
@@ -77,6 +85,9 @@ def main():
 
         for mode in ("c++20", "c++23"):
             compile_header(public_header, mode)
+        if msvc_cxx23 == "c++23preview":
+            compile_header(public_header, "c++latest",
+                           "GJXL storage contract requires C++20 or C++23")
         # MSVC 19.37 has no C++26 mode and does not permit spoofing _MSVC_LANG.
         # Exercise its real C++17 mode here; CMake rejects C++26 below.
         compile_header(public_header, "c++17" if msvc or gnu else "c++2c",
@@ -89,6 +100,16 @@ def main():
             source += public_header
             for mode in ("c++20", "c++23"):
                 compile_header(source, mode, diagnostic)
+        if msvc:
+            # Neither recognized compiler may be paired with the other's STL.
+            for compiler, headers in ((1937, 202503), (1944, 202305)):
+                source = ('#include <version>\n#include <span>\n#include <string>\n'
+                          '#include <unordered_map>\n#include <vector>\n'
+                          f'#undef _MSC_VER\n#define _MSC_VER {compiler}\n'
+                          f'#undef _MSVC_STL_UPDATE\n#define _MSVC_STL_UPDATE {headers}L\n'
+                          + public_header)
+                for mode in ("c++20", "c++23"):
+                    compile_header(source, mode, "an audited MSVC/STL pairing")
     with tempfile.TemporaryDirectory(prefix="gjxl-storage-toolchain-") as directory:
         # Actual production configuration, before any shader or encoder build.
         for language in (("CXX", "OBJCXX") if sys.platform == "darwin" else ("CXX",)):

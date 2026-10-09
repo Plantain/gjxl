@@ -19,6 +19,11 @@ toolkit. When used from this repository the crates locate the source tree
 automatically. Packaged consumers set `GJXL_SOURCE_DIR` to a GJXL checkout
 containing the matching C API.
 
+Native Windows ARM64 builds use the `aarch64-pc-windows-msvc` Rust toolchain,
+MSVC 14.44.35207 and ARM64 libclang. Follow the
+[Windows ARM64 setup](../docs/windows-arm64.md) before running Cargo. The
+default CPU backend is supported; cross-compilation remains unsupported.
+
 ## Lossless Modular
 
 `Context::encode_modular` preserves integer samples and unassociated alpha; it

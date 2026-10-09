@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
 #include <arm_neon.h>
 #endif
 
@@ -77,7 +77,7 @@ float FastCubeRootAndAdd(float value, float add) {
   return std::fma(squared, value, add);
 }
 
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
 float32x4_t FastCubeRootAndAdd(float32x4_t value, float32x4_t add) {
   constexpr float kOneThird = 1.0f / 3.0f;
   constexpr float kFourThirds = 4.0f / 3.0f;
@@ -248,7 +248,7 @@ Status TransformLinearRgbToOpsin(
         opsin.plane[2].Row(y),
       };
       size_t x = 0;
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) || defined(_M_ARM64)
       const float32x4_t bias = vdupq_n_f32(kOpsinBias);
       const float32x4_t negative_bias_cuberoot =
         vdupq_n_f32(-bias_cuberoot);

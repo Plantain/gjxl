@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Yunho Cho
 
+#include "test_environment.h"
+
 #include "codestream/workflow_admission.h"
 #include "codestream/workflow_storage_plan.h"
 #include "core/image_buffer.h"
@@ -21,15 +23,15 @@ void Ok(Status status) {
 }
 
 void CheckBoundedDefault() {
-  unsetenv("GJXL_GPU_TOKENIZATION");
-  unsetenv("GJXL_EARLY_ENTROPY");
-  unsetenv("GJXL_EXPERIMENT_EAGER_ENTROPY");
+  gjxl_test::SetEnvironment("GJXL_GPU_TOKENIZATION", nullptr);
+  gjxl_test::SetEnvironment("GJXL_EARLY_ENTROPY", nullptr);
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_EAGER_ENTROPY", nullptr);
   size_t cases = 0;
   // The narrow shape crosses a DC-group boundary: CPU 2 must fall back,
   // while CPU 4 can reserve both DC participants and the AC participant.
   for (const char* setting : {static_cast<const char*>(nullptr), "0", "1"}) {
-  if (setting) setenv("GJXL_EARLY_DC", setting, 1);
-  else unsetenv("GJXL_EARLY_DC");
+  if (setting) gjxl_test::SetEnvironment("GJXL_EARLY_DC", setting);
+  else gjxl_test::SetEnvironment("GJXL_EARLY_DC", nullptr);
   for (Extent2D extent : {Extent2D{273, 265}, Extent2D{2057, 17}}) {
     Image3FBuffer image(extent);
     for (size_t c = 0; c < 3; ++c)
@@ -63,13 +65,13 @@ void CheckBoundedDefault() {
                 options, WorkflowStorageRoute::kMetal,
                 WorkflowStorageAdapter::kBorrowedLinearRgb, timing};
             WorkflowStoragePlan disabled_plan, enabled_plan;
-            setenv("GJXL_EARLY_ENTROPY", "0", 1);
+            gjxl_test::SetEnvironment("GJXL_EARLY_ENTROPY", "0");
             Ok(ComputeWorkflowStoragePlan(extent, planning, &disabled_plan));
             std::vector<uint8_t> expected;
             VarDctEncodingSummary expected_summary;
             encode(&expected, &expected_summary);
             Ok(TrimVarDctPreparationCache());
-            unsetenv("GJXL_EARLY_ENTROPY");
+            gjxl_test::SetEnvironment("GJXL_EARLY_ENTROPY", nullptr);
             Ok(ComputeWorkflowStoragePlan(extent, planning, &enabled_plan));
             Require(enabled_plan.working == disabled_plan.working,
                     "Readiness switch changed the conservative admission bound");
@@ -100,7 +102,7 @@ void CheckBoundedDefault() {
           }
   }
   }
-  unsetenv("GJXL_EARLY_DC");
+  gjxl_test::SetEnvironment("GJXL_EARLY_DC", nullptr);
   std::cout << "Passed " << cases << " bounded default/opt-out/forced-on DC cases: "
       "ordinary/timing APIs, fully-resident/throughput, DC boundary, "
       "CPU 2/4, exact planned memory caps, repeated calls and byte/summary parity.\n";

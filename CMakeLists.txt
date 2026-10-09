@@ -544,6 +544,7 @@ install(
     "${CMAKE_CURRENT_BINARY_DIR}/gjxlConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/gjxlConfigVersion.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckStorageToolchain.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MsvcLanguageMode.cmake"
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/gjxl"
 )
 
@@ -1371,7 +1372,7 @@ if(GJXL_BUILD_TESTS)
     # The pinned libjxl revision references an MSVC overflow intrinsic that is
     # absent from some otherwise supported VS 2022 toolsets. clang-cl uses the
     # revision's builtin-overflow path and remains ABI-compatible with MSVC.
-    find_program(GJXL_PINNED_CLANG_CL clang-cl)
+    find_program(GJXL_PINNED_CLANG_CL clang-cl HINTS "$ENV{LIBCLANG_PATH}")
     if(GJXL_PINNED_CLANG_CL)
       set(GJXL_PINNED_LIBJXL_BUILD
           "${CMAKE_CURRENT_BINARY_DIR}/pinned-libjxl-clang")

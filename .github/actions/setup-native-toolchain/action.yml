@@ -34,7 +34,7 @@ runs:
         echo 'CXX=g++-13' >> "$GITHUB_ENV"
         g++-13 --version
         dpkg-query -W gcc-13 g++-13 libstdc++-13-dev libstdc++6
-    - name: Install and select MSVC 14.37
+    - name: Select audited native MSVC toolchain
       if: runner.os == 'Windows'
       shell: pwsh
       run: '& "$env:GITHUB_ACTION_PATH/setup-msvc.ps1"'

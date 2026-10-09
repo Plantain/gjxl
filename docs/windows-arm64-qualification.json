@@ -1,0 +1,119 @@
+{
+  "toolset": "14.44.35207",
+  "compiler": "19.44.35229",
+  "stl_version": 143,
+  "stl_update": 202503,
+  "headers_sha256": {
+    "vector": "351604d91a2ceac79f9bd9448c0553cccc22711e22955b5938eaf41de98334a6",
+    "xstring": "9407c290a1d0c6bebc42cf131bd04f09a9892f61b713eecb12827c0f6bbc3045",
+    "list": "4e3d4a6f46c2b07b18b22b1b12a003511e87b271f009786a45736a8fe67c9cb7",
+    "xhash": "b5b183c4fb05fa5c1079a6eb79b7de6b395bd5cb405c09832820e89e82423435",
+    "xmemory": "76359d0893ef63b0baa617e3f2d8729c50a24d349b41af51ad8e00ad7be82d70",
+    "yvals_core.h": "5070449e37a1735adf49204a12c7a7d5efa145d6aa607720aef5adbd2c57ef83",
+    "yvals.h": "a186476441eaa158056be01da9a1473217e14a7cc33365cbd0b6c9115833e0dc"
+  },
+  "date": "2026-10-08",
+  "branch": "feat/windows-arm64",
+  "base_commit": "f95b0ef057027ebb2b25be165349cdee19a2f477",
+  "cpu": "Snapdragon X2 Elite X2E84100",
+  "os_architecture": "ARM64",
+  "windows_sdk": "10.0.26100.0",
+  "rust": "1.98.1 aarch64-pc-windows-msvc",
+  "decoder": "libjxl e8ff09762481785938d8e4e01333ed3917571161; clang-cl 19.1.5 ARM64",
+  "results": {
+    "cxx20": {
+      "passed": 119,
+      "method": "Full suite plus targeted rerun of 5 checks after fixes"
+    },
+    "cxx23": {
+      "passed": 119,
+      "final_serializer_rerun": "passed"
+    },
+    "vardct_conformance": {
+      "fixtures": 23,
+      "workflow_policies": 4
+    },
+    "additional_modular_tests": {
+      "passed": 7
+    },
+    "rust": {
+      "passed": 12,
+      "format": "passed",
+      "clippy": "passed with -D warnings",
+      "incremental_rebuild": "passed"
+    },
+    "x64_msvc1944_regression": {
+      "passed": 3,
+      "execution": "Windows x64 emulation"
+    },
+    "native_pe_machine": "0xAA64",
+    "native_executable_counts": {
+      "build/windows-arm64": 113,
+      "build/windows-arm64-cxx23": 107,
+      "rust/target/debug/deps": 2,
+      "pinned_decoder_tools": 2
+    },
+    "hosted_ci": "Configured; not run"
+  },
+  "local_evidence": {
+    "ctest-cxx20.log": {
+      "sha256": "6eb7fef6d43cb403ad7221fe85a155345d3adcf3d369b1ec2ab0ade23a5390c1",
+      "path": "build/arm64-evidence/ctest-cxx20.log"
+    },
+    "ctest-cxx20-fixes.log": {
+      "sha256": "c749912c784299681576751219cab5eba047d7bba1296263d57bca75415ac0ff",
+      "path": "build/arm64-evidence/ctest-cxx20-fixes.log"
+    },
+    "ctest-cxx23.log": {
+      "sha256": "76c41ac8c7098b6c8cfac508fee4ba2b64f0c44b509a603ea538188029d3088d",
+      "path": "build/arm64-evidence/ctest-cxx23.log"
+    },
+    "ctest-modular.log": {
+      "sha256": "37c8484e2d72ce898b774220a5cb206660135b6561103e4bb77a71591f8e7a65",
+      "path": "build/arm64-evidence/ctest-modular.log"
+    },
+    "conformance.log": {
+      "sha256": "4578e6131d1cc09accf4cca0dcf9c6b8d2838af6d9882488ac83809ab9afb23a",
+      "path": "build/arm64-evidence/conformance.log"
+    },
+    "rust-test.log": {
+      "sha256": "4afbaf4f7c0f1c1e1a58e95ed89f9d9bc629657c9aa744b1643b2b0f46b405f9",
+      "path": "build/arm64-evidence/rust-test.log"
+    },
+    "rust-clippy.log": {
+      "sha256": "618cc88569b58ba16fe7b1f3e517d0b7b1b778a5a617ddc235fe35784a0cf793",
+      "path": "build/arm64-evidence/rust-clippy.log"
+    },
+    "rust-rebuild.log": {
+      "sha256": "1fb160cb71d98334c11402686294423d4932123e1c87102561ba473740f33c9a",
+      "path": "build/arm64-evidence/rust-rebuild.log"
+    },
+    "ctest-x64.log": {
+      "sha256": "f7d02f08d4fb694eca19c5b138a9fb68c39c862d35ea986d240c4864776f94ea",
+      "path": "build/arm64-evidence/ctest-x64.log"
+    },
+    "ctest-cxx23-final.log": {
+      "sha256": "70b141a54be476849f3f891c972e81847289063d495c8671aa211d159ebcda49",
+      "path": "build/arm64-evidence/ctest-cxx23-final.log"
+    }
+  },
+  "cmake": "3.29.2",
+  "os": "Microsoft Windows 11 Home 10.0.28000",
+  "commands": {
+    "setup": "& ./.github/actions/setup-native-toolchain/setup-msvc.ps1 -Architecture Arm64",
+    "configure_cxx20": "cmake -S . -B build/windows-arm64 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 -DGJXL_ENABLE_METAL=OFF -DGJXL_ENABLE_CUDA=OFF -DGJXL_BUILD_TESTS=ON -DGJXL_BUILD_BENCHMARKS=ON -DGJXL_ENABLE_LIBJXL_REFERENCE=OFF",
+    "build_cxx20": "cmake --build build/windows-arm64 --parallel 8",
+    "test_cxx20": "ctest --test-dir build/windows-arm64 --output-on-failure --parallel 4",
+    "test_cxx20_fixes": "ctest --test-dir build/windows-arm64 --output-on-failure -R '^(codestream_encoder|codec_install_consumer|storage_toolchain|stdlib_storage_compat(_cxx23)?)$' --parallel 2",
+    "configure_cxx23": "same configure flags, with -B build/windows-arm64-cxx23 -DCMAKE_CXX_STANDARD=23",
+    "test_cxx23": "ctest --test-dir build/windows-arm64-cxx23 --output-on-failure --parallel 4",
+    "conformance": "cmake --build build/windows-arm64 --target codestream-conformance --parallel 4",
+    "modular_reference": "cmake -S . -B build/windows-arm64 -DGJXL_MODULAR_ORACLE_BUILD=\"$PWD/build/windows-arm64/pinned-libjxl-clang\"",
+    "modular_tests": "ctest --test-dir build/windows-arm64 --output-on-failure -R '^(modular_oracle|modular_conformance|modular_policy|modular_transform|modular_api|modular_cli|modular_frozen_reference)$' --parallel 2",
+    "rust_environment": "$env:CMAKE_GENERATOR = 'Ninja'",
+    "rust_tests": "cargo test --manifest-path rust/Cargo.toml --workspace",
+    "rust_format": "cargo fmt --manifest-path rust/Cargo.toml --all --check",
+    "rust_clippy": "cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings",
+    "rust_rebuild": "python rust/check_native_rebuild.py"
+  }
+}

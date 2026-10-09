@@ -3,6 +3,7 @@
 
 include(CheckSourceCompiles)
 include(CMakePushCheckState)
+include("${CMAKE_CURRENT_LIST_DIR}/MsvcLanguageMode.cmake")
 
 # Used by the source build and the installed package. The header is the single
 # version/ABI policy; compile it with each enabled C++ compiler and selected SDK.
@@ -34,9 +35,22 @@ function(gjxl_check_storage_toolchain include_dir)
     set(CMAKE_${language}_STANDARD_REQUIRED ON)
     # Recheck after SDK/compiler/flags or the audited contract changes.
     unset(GJXL_${language}_STORAGE_TOOLCHAIN_SUPPORTED CACHE)
-    check_source_compiles(${language}
-      "#include <core/stdlib_storage_compat.h>\nint main() { return 0; }"
-      GJXL_${language}_STORAGE_TOOLCHAIN_SUPPORTED)
+    if(language STREQUAL "CXX" AND CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"
+       AND MSVC_VERSION EQUAL 1944 AND CMAKE_CXX_STANDARD EQUAL 23)
+      # try_compile reloads CMake's compiler rules instead of inheriting our
+      # language-option override. Apply it after the probe's project() too.
+      try_compile(GJXL_CXX_STORAGE_TOOLCHAIN_SUPPORTED
+        SOURCE_FROM_CONTENT storage.cxx
+          "#include <core/stdlib_storage_compat.h>\nint main() { return 0; }"
+        CMAKE_FLAGS
+          "-DINCLUDE_DIRECTORIES:STRING=${include_dir}"
+          "-DCMAKE_PROJECT_INCLUDE:FILEPATH=${CMAKE_CURRENT_FUNCTION_LIST_DIR}/MsvcLanguageMode.cmake"
+        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+    else()
+      check_source_compiles(${language}
+        "#include <core/stdlib_storage_compat.h>\nint main() { return 0; }"
+        GJXL_${language}_STORAGE_TOOLCHAIN_SUPPORTED)
+    endif()
     if(NOT GJXL_${language}_STORAGE_TOOLCHAIN_SUPPORTED)
       message(FATAL_ERROR
         "GJXL ${language} compiler/SDK does not satisfy the audited storage "

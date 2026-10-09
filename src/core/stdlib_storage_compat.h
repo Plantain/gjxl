@@ -15,16 +15,23 @@
 // probe, and allocation tests in sync; see docs/storage-toolchain.md.
 // Checking capacity after allocation cannot establish a hard allocation bound.
 #if defined(_MSVC_STL_VERSION)
-// VS 2022 17.7's STL: vector/list/xhash/xstring/yvals_core.h. Debug iterator
+// VS 2022 17.7 and 17.14 STL: vector/list/xhash/xstring/xmemory/yvals_core.h.
+// Compiler/header identities must remain paired. Debug iterator
 // proxies allocate additional backing and are outside this release contract.
-#if !defined(_MSC_VER) || _MSC_VER != 1937 || _MSVC_STL_VERSION != 143 || _MSVC_STL_UPDATE != 202305L
-#error "GJXL storage contract requires audited MSVC 19.37/STL 143 update 202305; see docs/storage-toolchain.md"
+#if !defined(_MSC_VER) || _MSVC_STL_VERSION != 143 || \
+    !((_MSC_VER == 1937 && _MSVC_STL_UPDATE == 202305L) || \
+      (_MSC_VER == 1944 && _MSVC_STL_UPDATE == 202503L))
+#error "GJXL storage contract requires an audited MSVC/STL pairing (19.37/202305 or 19.44/202503); see docs/storage-toolchain.md"
 #endif
 #if !defined(_ITERATOR_DEBUG_LEVEL) || _ITERATOR_DEBUG_LEVEL != 0
 #error "GJXL storage contract requires MSVC iterator debug level 0; see docs/storage-toolchain.md"
 #endif
-// This compiler reports 202004 for its /std:c++latest (CMake C++23) mode.
-#if !defined(_MSVC_LANG) || (_MSVC_LANG != 202002L && _MSVC_LANG != 202004L)
+// 19.37 uses /std:c++latest for C++23; 19.44 has /std:c++23preview.
+// The latter's /std:c++latest already enables post-C++23 behavior.
+#if !defined(_MSVC_LANG) || \
+    (_MSVC_LANG != 202002L && \
+     !(_MSC_VER == 1937 && _MSVC_LANG == 202004L) && \
+     !(_MSC_VER == 1944 && _MSVC_LANG == 202302L))
 #error "GJXL storage contract requires C++20 or C++23; see docs/storage-toolchain.md"
 #endif
 #elif defined(_LIBCPP_VERSION)
