@@ -36,6 +36,7 @@
 #include "codestream/entropy.h"
 #include "codestream/entropy_internal.h"
 #include "codestream/headers.h"
+#include "codestream/modular/stream_encoder.h"
 #include "codestream/sections.h"
 #include "codestream/serializer_storage_plan.h"
 #include "core/thread_budget.h"
@@ -88,28 +89,6 @@ Status AllocationFailure() {
   return Status::OutOfMemory("Codestream assembly allocation failed");
 }
 
-Status WriteValidatedTokenStream(
-  EntropyTokenStreamView tokens,
-  const EntropyCode& code,
-  BitWriter* writer) {
-
-  // The global section has already serialized and therefore validated this
-  // model. Avoid repeating that model-wide validation in every ANS section.
-  return code.mode == EntropyCodingMode::kAns
-    ? codestream_internal::WriteAnsTokenStream(
-        tokens, code, writer)
-    : WriteTokenStream(tokens, code, writer);
-}
-
-Status WriteValidatedTokenStream(
-  std::span<const EntropyToken> tokens,
-  const EntropyCode& code,
-  BitWriter* writer) {
-
-  return WriteValidatedTokenStream(
-    EntropyTokenStreamView::Interleaved(tokens), code, writer);
-}
-
 using codestream_internal::RunParallelSections;
 
 Status WriteDcGroupSection(
@@ -135,8 +114,8 @@ Status WriteDcGroupSection(
   const ProfileClock::time_point dc_tokens_begin =
     WorkBegin(profile != nullptr);
   const size_t dc_tokens_start = writer->bits_written();
-  if (Status status = WriteValidatedTokenStream(
-        dc_tokens, code, writer); !status.ok()) {
+  if (Status status = modular_internal::WriteStreamTokensWithValidatedModel(
+        EntropyTokenStreamView::Interleaved(dc_tokens), code, writer); !status.ok()) {
     return status;
   }
   written_token_bits = writer->bits_written() - dc_tokens_start;
@@ -156,8 +135,8 @@ Status WriteDcGroupSection(
   const ProfileClock::time_point metadata_tokens_begin =
     WorkBegin(profile != nullptr);
   const size_t metadata_tokens_start = writer->bits_written();
-  Status status = WriteValidatedTokenStream(
-    metadata_tokens, code, writer);
+  Status status = modular_internal::WriteStreamTokensWithValidatedModel(
+    EntropyTokenStreamView::Interleaved(metadata_tokens), code, writer);
   WorkEnd(
     profile != nullptr, metadata_tokens_begin,
     profile == nullptr ? nullptr : &profile->token_write_nanoseconds);
@@ -781,7 +760,7 @@ Status WriteAcSections(
         // Keep mutable writer metadata local to the worker. The model has
         // already been validated and is immutable until every worker joins.
         BitWriter local_output;
-        Status token_status = WriteValidatedTokenStream(
+        Status token_status = codestream_internal::WriteValidatedTokenStream(
           ac.streams[index], ac_code, &local_output);
         if (token_status.ok()) {
           candidate[1 + index] = std::move(local_output);
@@ -863,8 +842,8 @@ Status WriteOverlappedSections(
         },
         [&](size_t index) {
           BitWriter local_output;
-          Status result = WriteValidatedTokenStream(ac.streams[index], ac_code,
-                                                   &local_output);
+          Status result = codestream_internal::WriteValidatedTokenStream(
+              ac.streams[index], ac_code, &local_output);
           if (result.ok()) ac_output[1 + index] = std::move(local_output);
           return result;
         });

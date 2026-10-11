@@ -10,7 +10,7 @@
 #include <memory>
 #include <random>
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
 #include <intrin.h>
 #endif
 
@@ -282,24 +282,23 @@ bool CheckLayoutPlanning() {
       stride >= extent.width && alignment >= element_size && (alignment & (alignment - 1)) == 0;
     size_t expected_offset = 0, expected_bytes = 0, expected_end = 0;
     if (valid) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
       // Use hardware wide arithmetic as an independent overflow oracle on
       // MSVC, which has no C++ unsigned 128-bit integer type.
       static_assert(sizeof(size_t) == sizeof(unsigned long long));
-      unsigned long long elements_high = 0;
-      unsigned long long elements = _umul128(extent.height - 1, stride,
-                                             &elements_high);
-      elements_high += _addcarry_u64(0, elements, extent.width, &elements);
-      unsigned long long offset = 0;
-      const bool offset_high =
-        _addcarry_u64(0, initial, alignment - 1, &offset) != 0;
+      unsigned long long elements_high = __umulh(extent.height - 1, stride);
+      unsigned long long elements = (extent.height - 1) * stride;
+      elements += extent.width;
+      elements_high += elements < extent.width;
+      unsigned long long offset = initial + (alignment - 1);
+      const bool offset_high = offset < initial;
       offset &= ~(static_cast<unsigned long long>(alignment) - 1);
       valid = elements_high == 0 && elements <= maximum / element_size &&
         !offset_high;
       if (valid) {
         const auto bytes = elements * element_size;
-        unsigned long long end = 0;
-        valid = _addcarry_u64(0, offset, bytes, &end) == 0;
+        const unsigned long long end = offset + bytes;
+        valid = end >= offset;
         expected_offset = offset;
         expected_bytes = bytes;
         expected_end = end;

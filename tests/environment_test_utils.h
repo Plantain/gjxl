@@ -6,6 +6,8 @@
 #include <stdexcept>
 
 namespace gjxl_test {
+// Call between encodes, when no worker is reading the process environment.
+// A null value removes the variable on both platforms.
 inline void SetEnvironment(const char* name, const char* value) {
 #if defined(_WIN32)
   const int result = _putenv_s(name, value == nullptr ? "" : value);

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Yunho Cho
 
+#include "environment_test_utils.h"
+
 #include "codestream/ac_tokenization_provider_internal.h"
 #include "codestream/compatibility_workflow_storage_plan.h"
 #include "codestream/resident_workflow_storage_plan.h"
@@ -25,9 +27,9 @@ void Ok(Status status) {
 }
 void Select(const char *value) {
   if (value)
-    setenv("GJXL_GPU_TOKENIZATION", value, 1);
+    gjxl_test::SetEnvironment("GJXL_GPU_TOKENIZATION", value);
   else
-    unsetenv("GJXL_GPU_TOKENIZATION");
+    gjxl_test::SetEnvironment("GJXL_GPU_TOKENIZATION", nullptr);
 }
 struct Encoded {
   std::vector<uint8_t> bytes;
@@ -95,24 +97,24 @@ int main() try {
         "GJXL_EXPERIMENT_TOKEN_OVERLAP", "GJXL_EXPERIMENT_TOKEN_SHARDS",
         "GJXL_EXPERIMENT_TOKEN_SCALAR_DCT8", "GJXL_EXPERIMENT_TOKEN_GROUP_DCT8",
         "GJXL_EXPERIMENT_TOKEN_CAPACITY", "GJXL_EXPERIMENT_TOKEN_CACHE"})
-    unsetenv(name);
+    gjxl_test::SetEnvironment(name, nullptr);
   Select(nullptr);
   Require(GpuTokenizationEnabled() && GpuTokenizationCompactLayout() == 2 &&
               GpuTokenizationOverlapEnabled(),
           "Qualified default configuration is disabled");
 #ifndef GJXL_TOKENIZATION_EXPERIMENT
-  setenv("GJXL_EXPERIMENT_TOKEN_COMPACT", "0", 1);
-  setenv("GJXL_EXPERIMENT_TOKEN_OVERLAP", "0", 1);
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_TOKEN_COMPACT", "0");
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_TOKEN_OVERLAP", "0");
   Require(GpuTokenizationCompactLayout() == 2 &&
               GpuTokenizationOverlapEnabled(),
           "Experimental controls affected a production build");
-  unsetenv("GJXL_EXPERIMENT_TOKEN_COMPACT");
-  unsetenv("GJXL_EXPERIMENT_TOKEN_OVERLAP");
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_TOKEN_COMPACT", nullptr);
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_TOKEN_OVERLAP", nullptr);
 #endif
-  setenv("GJXL_EXPERIMENT_GPU_TOKENS", "1", 1);
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_GPU_TOKENS", "1");
   Select("0");
   Require(!GpuTokenizationEnabled(), "Stable CPU override lost precedence");
-  unsetenv("GJXL_EXPERIMENT_GPU_TOKENS");
+  gjxl_test::SetEnvironment("GJXL_EXPERIMENT_GPU_TOKENS", nullptr);
   CheckPlans();
   Image3FBuffer image({273, 265});
   for (size_t c = 0; c < 3; ++c)

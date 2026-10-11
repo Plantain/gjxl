@@ -25,6 +25,14 @@
 
 namespace gjxl {
 using codestream_internal::Storage;
+
+Status codestream_internal::WriteValidatedTokenStream(
+    EntropyTokenStreamView tokens, const EntropyCode& code, BitWriter* writer) {
+  return code.mode == EntropyCodingMode::kAns
+    ? WriteAnsTokenStream(tokens, code, writer)
+    : WriteTokenStream(tokens, code, writer);
+}
+
 namespace {
 
 using ProfileClock = std::chrono::steady_clock;
@@ -2262,9 +2270,11 @@ Status WriteEntropyCode(const EntropyCode& code, BitWriter* writer) {
   }
   BitWriter temporary;
   try {
-    if (Status status = WriteContextMapInternal(code, &temporary);
-        !status.ok()) {
-      return status;
+    // With one context the decoder has an implicit {0} map and reads no bits.
+    if (code.context_count > 1) {
+      if (Status status = WriteContextMapInternal(code, &temporary); !status.ok()) {
+        return status;
+      }
     }
     if (Status status = WritePrefixCodesInternal(
           code.prefix_codes, code.uint_configs, &temporary);

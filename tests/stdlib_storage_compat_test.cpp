@@ -19,7 +19,7 @@ bool Check(bool good, const char* message) {
 
 template <typename T>
 bool ExactAllocatorResults() {
-#if __cplusplus >= 202302L
+#if defined(__cpp_lib_allocate_at_least) && __cpp_lib_allocate_at_least >= 202302L
   // Exercise both C++23 dispatch paths directly: the standard allocator's
   // member and allocator_traits' fallback for GJXL's custom allocator.
   static_assert(!requires(ManagedAllocator<T> allocator) { allocator.allocate_at_least(1); });

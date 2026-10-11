@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Yunho Cho
+
 #include "codestream/ac_tokenization_provider_internal.h"
 #include "codestream/encoder_internal.h"
 #include "codestream/entropy_readiness_internal.h"

@@ -57,6 +57,11 @@ execute_process(
     -DJPEGXL_ENABLE_OPENEXR=OFF
     -DJPEGXL_ENABLE_VIEWERS=OFF
     -DJPEGXL_ENABLE_TRANSCODE_JPEG=OFF
+    # Conformance exchanges PNM/PFM, so optional image libraries are unnecessary.
+    # In particular, don't pick up x64 MinGW libraries from an ARM64 host's PATH.
+    -DCMAKE_DISABLE_FIND_PACKAGE_JPEG=ON
+    -DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON
+    -DCMAKE_DISABLE_FIND_PACKAGE_GIF=ON
     -DHWY_ENABLE_TESTS=OFF
     -DHWY_ENABLE_EXAMPLES=OFF
   RESULT_VARIABLE configure_result

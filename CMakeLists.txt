@@ -291,10 +291,18 @@ add_library(
   src/codec/butteraugli_distance_internal.cpp
   src/codec/butteraugli_internal.cpp
   src/codec/chroma_from_luma.cpp
+  src/codec/frame_metadata.cpp
+  src/codec/modular/image.cpp
+  src/codec/modular/geometry.cpp
+  src/codec/modular/tree_learning.cpp
+  src/codec/modular/transform/transform.cpp
+  src/codec/modular/transform/palette.cpp
+  src/codec/modular/transform/squeeze.cpp
+  src/codec/modular/frame.cpp
   src/codec/color_transform.cpp
   src/codec/convolution.cpp
   src/codec/dc_conversion.cpp
-  src/codec/dc_quantization.cpp
+  src/codec/vardct/dc_quantization.cpp
   src/codec/dc_smoothing.cpp
   src/codec/dct.cpp
   src/codec/epf.cpp
@@ -338,13 +346,23 @@ add_library(
   src/codestream/bit_writer.cpp
   src/codestream/block_context_map.cpp
   src/codestream/coefficient_order.cpp
-  src/codestream/dc_group.cpp
-  src/codestream/weighted_dc.cpp
-  src/codestream/dc_context_tree.cpp
+  src/codestream/vardct/dc_group.cpp
+  src/codestream/vardct/weighted_dc.cpp
+  src/codestream/vardct/dc_context_tree.cpp
   src/codestream/entropy.cpp
   src/codestream/context_map.cpp
-  src/codestream/encoder.cpp
+  src/codestream/vardct/encoder.cpp
   src/codestream/headers.cpp
+  src/codestream/vardct/headers.cpp
+  src/codestream/modular/stream_encoder.cpp
+  src/codestream/modular/tree_codec.cpp
+  src/codestream/modular/stream_plan.cpp
+  src/codestream/modular/search.cpp
+  src/codestream/modular/tokenization.cpp
+  src/codestream/modular/storage_plan.cpp
+  src/codestream/modular/frame_encoder.cpp
+  src/codestream/modular/public.cpp
+  src/codestream/modular/workflow.cpp
   src/codestream/huffman.cpp
   src/codestream/rate_control.cpp
   src/codestream/cpu_workflow_storage_plan.cpp
@@ -363,6 +381,7 @@ if(GJXL_ENABLE_METAL)
 endif()
 
 add_library(gjxl::codestream ALIAS gjxl_codestream)
+target_include_directories(gjxl_codestream PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 set_target_properties(
   gjxl_codestream
@@ -457,6 +476,8 @@ target_link_libraries(
 add_executable(
   gjxl_encode
   tools/gjxl_encode.cpp
+  tools/modular_cli.cpp
+  src/io/pnm.cpp
 )
 
 target_link_libraries(
@@ -532,6 +553,7 @@ install(
     "${CMAKE_CURRENT_BINARY_DIR}/gjxlConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/gjxlConfigVersion.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckStorageToolchain.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MsvcLanguageMode.cmake"
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/gjxl"
 )
 
@@ -1380,7 +1402,7 @@ if(GJXL_BUILD_TESTS)
     # The pinned libjxl revision references an MSVC overflow intrinsic that is
     # absent from some otherwise supported VS 2022 toolsets. clang-cl uses the
     # revision's builtin-overflow path and remains ABI-compatible with MSVC.
-    find_program(GJXL_PINNED_CLANG_CL clang-cl)
+    find_program(GJXL_PINNED_CLANG_CL clang-cl HINTS "$ENV{LIBCLANG_PATH}")
     if(GJXL_PINNED_CLANG_CL)
       set(GJXL_PINNED_LIBJXL_BUILD
           "${CMAKE_CURRENT_BINARY_DIR}/pinned-libjxl-clang")
@@ -2323,6 +2345,30 @@ if(GJXL_BUILD_TESTS)
   target_link_libraries(gjxl_dc_context_tree_test PRIVATE gjxl_codestream)
   add_test(NAME dc_context_tree COMMAND gjxl_dc_context_tree_test)
 
+  add_executable(gjxl_modular_stream_test tests/modular_stream_test.cpp)
+  target_link_libraries(gjxl_modular_stream_test PRIVATE gjxl_codestream)
+  add_test(NAME modular_stream COMMAND gjxl_modular_stream_test)
+
+  add_executable(gjxl_modular_foundation_test tests/modular_foundation_test.cpp)
+  target_link_libraries(gjxl_modular_foundation_test PRIVATE gjxl_codestream)
+  add_test(NAME modular_foundation COMMAND gjxl_modular_foundation_test)
+
+  add_executable(gjxl_modular_workflow_test tests/modular_workflow_test.cpp)
+  target_link_libraries(gjxl_modular_workflow_test PRIVATE gjxl_codestream)
+  add_test(NAME modular_workflow COMMAND gjxl_modular_workflow_test)
+
+  add_executable(gjxl_modular_capture tools/modular_oracle/capture.cpp src/io/pnm.cpp)
+  target_link_libraries(gjxl_modular_capture PRIVATE gjxl_codestream)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME modular_frozen_oracle COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/modular_oracle/verify.py"
+      "$<TARGET_FILE:gjxl_modular_capture>" "${CMAKE_CURRENT_SOURCE_DIR}/testdata/modular"
+      "${CMAKE_CURRENT_BINARY_DIR}/modular-frozen-native")
+  endif()
+
+  include(cmake/ModularOracle.cmake)
+
   # Optional direct oracle from a separately built, pinned libjxl archive.
   # These dependencies never enter the native library or installed interface.
   set(GJXL_DC_ORACLE_BUILD "" CACHE PATH "Pinned libjxl build for direct DC algorithm oracle")
@@ -2351,13 +2397,22 @@ if(GJXL_BUILD_TESTS)
       "${dc_oracle_source}" "${dc_oracle_source}/lib/include"
       "${GJXL_DC_ORACLE_BUILD}/lib/include"
       "${dc_oracle_source}/third_party/highway")
+    if(WIN32)
+      set(dc_oracle_prefix "")
+      set(dc_oracle_archive_suffix ".lib")
+      set(dc_oracle_link_suffix ".lib")
+    else()
+      set(dc_oracle_prefix "lib")
+      set(dc_oracle_archive_suffix ".a")
+      set(dc_oracle_link_suffix "${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    endif()
     target_link_libraries(gjxl_dc_processing_oracle_test PRIVATE gjxl_codec
-      "${GJXL_DC_ORACLE_BUILD}/lib/libjxl-internal.a"
-      "${GJXL_DC_ORACLE_BUILD}/third_party/highway/libhwy.a"
-      "${GJXL_DC_ORACLE_BUILD}/lib/libjxl_cms${CMAKE_SHARED_LIBRARY_SUFFIX}"
-      "${GJXL_DC_ORACLE_BUILD}/third_party/brotli/libbrotlienc${CMAKE_SHARED_LIBRARY_SUFFIX}"
-      "${GJXL_DC_ORACLE_BUILD}/third_party/brotli/libbrotlidec${CMAKE_SHARED_LIBRARY_SUFFIX}"
-      "${GJXL_DC_ORACLE_BUILD}/third_party/brotli/libbrotlicommon${CMAKE_SHARED_LIBRARY_SUFFIX}")
+      "${GJXL_DC_ORACLE_BUILD}/lib/${dc_oracle_prefix}jxl-internal${dc_oracle_archive_suffix}"
+      "${GJXL_DC_ORACLE_BUILD}/third_party/highway/${dc_oracle_prefix}hwy${dc_oracle_archive_suffix}"
+      "${GJXL_DC_ORACLE_BUILD}/lib/${dc_oracle_prefix}jxl_cms${dc_oracle_link_suffix}"
+      "${GJXL_DC_ORACLE_BUILD}/third_party/brotli/${dc_oracle_prefix}brotlienc${dc_oracle_link_suffix}"
+      "${GJXL_DC_ORACLE_BUILD}/third_party/brotli/${dc_oracle_prefix}brotlidec${dc_oracle_link_suffix}"
+      "${GJXL_DC_ORACLE_BUILD}/third_party/brotli/${dc_oracle_prefix}brotlicommon${dc_oracle_link_suffix}")
     add_executable(gjxl_dc_context_tree_oracle_test tests/dc_context_tree_test.cpp)
     target_compile_definitions(gjxl_dc_context_tree_oracle_test PRIVATE GJXL_DC_TREE_ORACLE=1)
     get_target_property(dc_oracle_includes gjxl_dc_processing_oracle_test INCLUDE_DIRECTORIES)
@@ -2369,6 +2424,11 @@ if(GJXL_BUILD_TESTS)
     endif()
     add_test(NAME dc_context_tree_oracle COMMAND gjxl_dc_context_tree_oracle_test)
     add_test(NAME dc_processing_oracle COMMAND gjxl_dc_processing_oracle_test)
+    if(WIN32)
+      # BuildPinnedDjxl collects the reference DLLs beside its tools.
+      set_tests_properties(dc_context_tree_oracle dc_processing_oracle PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${GJXL_DC_ORACLE_BUILD}/tools")
+    endif()
   endif()
 
   add_executable(

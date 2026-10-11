@@ -9,23 +9,30 @@ contract:
 | macOS | Apple Clang 17.0.0, build `17000604`; SDK libc++ `200100` | Stable ABI 1; C++20/C++23, including Objective-C++ |
 | macOS | Apple Clang 21.0.0, build `21000334`; SDK libc++ `220106` (Xcode 27.0 build `27A266a`) | Stable ABI 1; C++20/C++23, including Objective-C++ |
 | Windows x64 | MSVC 19.37 / STL 143 update `202305` (VS 2022 toolset 14.37.32822) | Release iterator level 0; C++20 or MSVC's C++23/latest mode |
+| Windows ARM64 | MSVC 19.44 / STL 143 update `202503` (VS 2022 toolset 14.44.35207) | Release iterator level 0; C++20 or `/std:c++23preview`; CPU backend |
 | Linux x86-64 | Ubuntu 24.04 GCC `13.3.0-6ubuntu2~24.04.1`; libstdc++ 13 headers `20240904` | C++11 string ABI; release library; C++20/C++23 |
 
-Windows and Linux support is being qualified on the CUDA integration branch.
-Their allocation and installed-interface results must be recorded before final
-acceptance. GNU debug/parallel modes, other library versions and compiler builds
-remain rejected. GCC 13 reports its C++23 mode as `__cplusplus == 202100L`;
+The original Windows x64 and Linux CUDA qualification is tracked separately
+from the native ARM64 CPU qualification linked below. GNU debug/parallel modes,
+other library versions and compiler builds remain rejected.
+GCC 13 reports its C++23 mode as `__cplusplus == 202100L`;
 MSVC 19.37 reports `/std:c++latest` as `_MSVC_LANG == 202004L`.
+MSVC 19.44 reports `/std:c++23preview` as `202302L`; its latest mode is
+`202400L` and is rejected. See the [Windows ARM64 audit and build instructions](windows-arm64.md).
 
 The native and Rust CI matrices select Xcode 26.3 (build `17C529`) on
 the `macos-26` runner through `DEVELOPER_DIR`, as does publishing. This provides the audited
 compiler and libc++ headers above; the runner's default Xcode can change
 independently and is not a supported-toolchain selection. The shared
 `setup-native-toolchain` action pins the GNU compiler/header/runtime packages
-listed above and selects MSVC 14.37 explicitly on Windows. It installs the
+listed above and selects MSVC 14.37 explicitly on Windows x64. It installs the
 Microsoft `Microsoft.VisualStudio.Component.VC.14.37.17.7.x86.x64` component
 when that toolset is absent. A missing pinned package or toolchain is a CI
 failure; there is no fallback that disables storage validation.
+The `windows-11-arm` jobs instead select toolset 14.44.35207 and the
+`Microsoft.VisualStudio.Component.VC.14.44.17.14.ARM64` component, with a native
+ARM64 compiler and libclang. The two recognized MSVC/STL identities must be
+paired; accepting ARM64 does not admit arbitrary later compiler/header versions.
 
 Compiler/header pairs are checked together; mixing the two recognized Apple
 Clang and libc++ versions is rejected. Accepting Xcode 27 does not change the
@@ -111,6 +118,9 @@ counts; growth is 1.5x, inside the shared 2x envelope. String growth/rounding fi
 the shared slack. Hash maps own an allocated list sentinel and 8 initial
 buckets with two pointer-sized slots per bucket; subsequent 8x/power-of-two
 bucket growth is covered by the MSVC-specific empty, retained and peak bounds.
+The same bounds hold for the reviewed 14.44.35207 ARM64 headers, including
+C++23 allocator dispatch; the [ARM64 audit](windows-arm64.md#storage-audit-for-msvc-1944)
+records the implementation paths and validation.
 
 The GNU audit covers `bits/stl_vector.h`, `bits/vector.tcc`,
 `bits/basic_string.h`, `bits/basic_string.tcc`, `bits/hashtable.h`,

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Native Windows ARM64
+
+- Add native CPU encoding with MSVC 19.44/STL 143 update 202503, preserving
+  audited memory bounds and recognizing MSVC ARM64 in the NEON paths.
+- Support C++20 and explicit C++23 mode, installed C/C++ consumers, and native
+  ARM64 Rust builds. Add ARM64 jobs to native and Rust CI.
+- See [Windows ARM64](windows-arm64.md) for toolchain setup and qualification.
+
 ### Optional EPF sharpness search
 
 - CPU and Metal encoding can search the final per-block EPF sharpness map at

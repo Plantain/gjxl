@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <thread>
 #include <vector>
 
 #include "codec/chroma_from_luma.h"
@@ -730,19 +731,31 @@ bool CheckManagedSerializerStorage() {
     if (!budget.Reserve(64 * 1024 * 1024, &job).ok()) return false;
     std::vector<uint8_t> encoded;
     thread_budget_internal::CpuParticipantTracker tracker;
+    // Observe real worker construction without injecting a failure. Small
+    // sections can finish before the next OS thread starts, so peak overlap
+    // alone cannot prove whether the parallel path ran.
+    thread_budget_internal::WorkerLaunchFaultForTesting launches{
+      .site = thread_budget_internal::WorkerLaunchSite::kSerializerSections,
+      .fail_before_worker = std::numeric_limits<size_t>::max(),
+    };
     {
       ResourceContextScope resources({&job, ResourceClass::kSerializer});
       thread_budget_internal::EncodeScope threads(4, &tracker);
+      thread_budget_internal::WorkerLaunchFaultScopeForTesting observe(&launches);
       const auto status = EncodeVarDctCodestream(frame, {.entropy_behavior = behavior}, &encoded);
       if (!status.ok()) { std::cerr << status.message() << '\n'; return false; }
     }
     job.Reset();
-    if (encoded != expected || tracker.peak() < 2 || budget.snapshot().peak_backing_bytes == 0 ||
+    if (encoded != expected || tracker.peak() == 0 || tracker.peak() > 4 ||
+        tracker.active() != 0 || launches.triggered ||
+        (std::thread::hardware_concurrency() > 1 && launches.launched_in_group == 0) ||
+        budget.snapshot().peak_backing_bytes == 0 ||
         budget.snapshot().committed_bytes() != 0 ||
         DefaultResourceBudget().snapshot().peak_backing_bytes != fallback_peak) {
       std::cerr << "Managed parallel serialization failed: behavior="
                 << static_cast<int>(behavior) << " bytes_equal=" << (encoded == expected)
                 << " participants=" << tracker.peak()
+                << " launched=" << launches.launched_in_group
                 << " backing_peak=" << budget.snapshot().peak_backing_bytes
                 << " committed=" << budget.snapshot().committed_bytes()
                 << " fallback_peak=" << fallback_peak << " -> "

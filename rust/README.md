@@ -18,3 +18,29 @@ platforms build the portable CPU backend by default. Enable the safe crate's
 toolkit. When used from this repository the crates locate the source tree
 automatically. Packaged consumers set `GJXL_SOURCE_DIR` to a GJXL checkout
 containing the matching C API.
+
+Native Windows ARM64 builds use the `aarch64-pc-windows-msvc` Rust toolchain,
+MSVC 14.44.35207 and ARM64 libclang. Follow the
+[Windows ARM64 setup](../docs/windows-arm64.md) before running Cargo. The
+default CPU backend is supported; cross-compilation remains unsupported.
+
+## Lossless Modular
+
+`Context::encode_modular` preserves integer samples and unassociated alpha; it
+uses CPU for automatic execution. This is independent of `encode` and its VarDCT
+quality/distance controls.
+
+```rust
+let image = gjxl::ImageView::new(width, height, stride_bytes, &pixels,
+                                gjxl::PixelFormat::Rgba16BeSrgb)?;
+let encoded = context.encode_modular(&image, gjxl::ModularOptions {
+    search: true,
+    entropy: gjxl::ModularEntropy::Ans,
+})?;
+```
+
+Use `Gray8Srgb`, `Rgb8Srgb`, `Rgba8Srgb`, or the `Gray16`, `Rgb16`, `Rgba16`
+variants ending in `LeSrgb`/`BeSrgb`. Buffers are byte slices with explicit byte
+order; padded rows and unaligned data are supported. Source colors are sRGB (or
+its gray transfer function); no float conversion or alpha premultiplication is
+performed. Bindgen includes the new sized C options and entry point automatically.
