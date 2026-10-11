@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Yunho Cho
 // Exercise publication, worker failures, budget fallback and shared callers.
-#include "test_environment.h"
 
 #include "codestream/ac_tokenization_provider_internal.h"
 #include "codestream/encoder_internal.h"
@@ -9,6 +8,7 @@
 #include "core/thread_budget.h"
 #include "core/worker_launch_internal.h"
 #include "quantized_frame_fixture.h"
+#include "environment_test_utils.h"
 #include <atomic>
 #include <iostream>
 #include <optional>

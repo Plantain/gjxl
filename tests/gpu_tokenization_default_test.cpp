@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Yunho Cho
 
-#include "test_environment.h"
+#include "environment_test_utils.h"
 
 #include "codestream/ac_tokenization_provider_internal.h"
 #include "codestream/compatibility_workflow_storage_plan.h"

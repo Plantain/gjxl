@@ -37,6 +37,7 @@ set(GJXL_PUBLIC_CXX_HEADERS
   codec/dc_smoothing.h
   codec/dct.h
   codec/epf.h
+  codec/epf_search.h
   codec/gaborish.h
   codec/loop_filter.h
   codec/maximum_error.h

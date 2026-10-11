@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Yunho Cho
-#include "test_environment.h"
 
 #include "codestream/ac_tokenization_provider_internal.h"
 #include "codestream/encoder_internal.h"
 #include "codestream/entropy_readiness_internal.h"
 #include "core/worker_launch_internal.h"
 #include "quantized_frame_fixture.h"
+#include "environment_test_utils.h"
 
 #include <atomic>
 #include <iostream>
@@ -233,7 +233,8 @@ int main() try {
         Provider provider;
         AcTokenizationProviderScope provider_scope(&provider);
         std::vector<uint8_t> bytes;
-        if (!EncodeVarDctCodestreamFromView(frame, {}, &bytes).ok() ||
+        const VarDctCodestreamOptions options;
+        if (!EncodeVarDctCodestreamFromView(frame, options, &bytes).ok() ||
             bytes != expected || provider.begins != 1 || provider.finishes != 1) good = false;
       }
     });
