@@ -8,7 +8,7 @@
 
 > gjxl is still in early development. Please let us know in [issues](https://github.com/yunho-c/gjxl/issues) if you have any thoughts, feedback, or requests to share!
 
-### Overview
+## Overview
 
 **Performance**
 
@@ -53,7 +53,9 @@ If you are impacted by these limitations, please feel free to let us know.
 
 JPEG XL is a modern image codec that typically achieves 30-60% smaller files compared to JPEG and 30-50% smaller files compared to PNG (lossless).
 
-Attach the diagram, and link users to the JPEG XL papers.
+![Overview of the JPEG XL codec architecture, including VarDCT and Modular encoding, JPEG reconstruction, and decoding](assets/jpeg-xl-codec-architecture.svg)
+
+*Figure 6 from [The JPEG XL Image Coding System: History, Features, Coding Tools, Design Rationale, and Future](https://arxiv.org/abs/2506.05987v2), by Sneyers et al. (2025), licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).*
 
 </details>
 
@@ -99,9 +101,7 @@ gjxl is licensed under [Apache-2.0](LICENSE). Third-party dependencies retain th
 - [Development](#development)
 - [Documentation](#documentation)
 
-
-
-### Theory of operation
+## Theory of operation
 
 JPEG XL's encoding pipeline is complex, yet most computations expose data parallelism (i.e., existence of many independently computable work units), which GPUs are well-suited for. `gjxl` offloads (to GPU) roughly the initial two-thirds of the encoding pipeline—which we collectively refer to as the *perceptual analysis pipeline*—consisting of the following stages (ordered as they operate in the encoder):
 
@@ -117,21 +117,20 @@ JPEG XL's encoding pipeline is complex, yet most computations expose data parall
   - Trial quantization/reconstruction (inverse DCT, CfL, adaptive filtering, XYB conversion)
   - Perceptual refinement using Butteraugli perceptual error metric
 - Tokenization
-  - Zero-counting, histogramming,
-  - Overlapped with DC tokenization and entropy coding, running on CPU
+  - Zero-counting and prefix sum for token offsets
+  - Emission of token values and entropy contexts
+  - GPU AC tokenization overlaps with CPU DC tokenization and entropy-model preparation
 
 Remaining stages (entropy coding and bitstream assembly) are comparatively serial and remain on the CPU.
 
----
-
-### Encode an image
+## Encode an image
 
 ```sh
 python3 tools/encode_image.py --encoder build/release/gjxl_encode \
   input.png output.jxl -- --distance 1.0 --effort 7
 ```
 
-#### Quality and effort
+### Quality and effort
 
 `--distance` is a positive Butteraugli target: smaller values request higher
 quality and generally larger files. Start with `1.0`. It is an encoder target,
@@ -141,7 +140,6 @@ Distance `0` is not a lossless mode.
 > TODO: add a quality/distance map image here
 
 `--effort` controls the amount of search and refinement; the default is `7`.
-
 
 
 | Effort | Transform search                                         | Adaptive-quantization updates |
@@ -162,7 +160,7 @@ build/release/gjxl_encode --target-bpp 1.0 input.pfm output.jxl
 
 These searches can perform multiple complete encodes. The default is up to 12 attempts with a 0.5% size tolerance. See [rate control](docs/rate-control.md) for details.
 
-#### Choose a backend
+### Choose a backend
 
 ```sh
 build/release/gjxl_encode --backend cpu --distance 1.0 input.pfm cpu.jxl
@@ -173,9 +171,9 @@ build/cuda/gjxl_encode --backend cuda --distance 1.0 input.pfm cuda.jxl
 
 Default automatic target-size and maximum-error requests stay on CPU. → okay this is a problem and should be fixed
 
-### Use as a library
+## Use as a library
 
-#### C and C++
+### C and C++
 
 Install the libraries, headers, CLI, and CMake package from a complete build:
 
@@ -200,7 +198,7 @@ C callers can link `gjxl::codestream` and use
 floating-point linear RGB, or the [batch workflow](src/codestream/batch_workflow.h).
 See the [installed interface](docs/installed-interface.md) for components and public headers.
 
-#### Rust
+### Rust
 
 The repository contains the safe `gjxl` crate and raw `gjxl-sys` bindings:
 
@@ -222,7 +220,7 @@ set `GJXL_SOURCE_DIR` to a matching source checkout. Enable the `cuda` feature
 to build CUDA support on Linux or Windows. Cross-compilation is not currently
 supported. See the [Rust README](rust/README.md) for details.
 
-### Development
+## Development
 
 Build and run the test suite in a separate directory:
 
@@ -244,7 +242,7 @@ The conformance target builds the decoder from the recursive submodule checkout.
 `GJXL_BUILD_BENCHMARKS=ON` builds the benchmark tools. Rust tests run with
 `cargo test --manifest-path rust/Cargo.toml --workspace`.
 
-### Documentation
+## Documentation
 
 - [Resident execution](docs/resident-execution.md): GPU residency and workflow design.
 - [Managed resources](docs/resident-resources.md): memory admission and execution domains.
