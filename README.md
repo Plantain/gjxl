@@ -1,10 +1,10 @@
 # gjxl
 
-`gjxl` is a **GPU-accelerated JPEG XL encoder** with 2-30x speedup vs. multithreaded CPU at equal-or-better compression rates. 
+`gjxl` is a **GPU-accelerated JPEG XL encoder** with 2-30x speedup vs. multithreaded CPU at equal-or-better compression rates. 
 
 [Paper](arxiv) | Blog post (coming soon)
 
-> **Abstract**: JPEG XL offers state-of-the-art compression rate and versatility. However, this comes at the cost of high computational complexity, especially for encoding. High-resolution images, such as those shot on modern smartphones, can take over 10 seconds to encode at high effort, which may complicate widespread adoption of JPEG XL. Based on the observation that much of libjxl’s expensive computations are parallelizable, we empirically demonstrate the usefulness of GPUs for JPEG XL by developing gjxl, a GPU-accelerated encoder that offloads perceptual analysis workloads to the GPU while keeping entropy/bitstream workloads on the CPU. **gjxl achieves 2.8× speedup vs. libjxl at default effort** while simultaneously producing smaller files via a more aggressive use of compute-intensive features. gjxl is permissively licensed and available at [++https://github.com/yunho-c/gjxl++](https://github.com/yunho-c/gjxl). 
+> **Abstract**: JPEG XL offers state-of-the-art compression rate and versatility. However, this comes at the cost of high computational complexity, especially for encoding. High-resolution images, such as those shot on modern smartphones, can take over 10 seconds to encode at high effort, which may complicate widespread adoption of JPEG XL. Based on the observation that much of libjxl’s expensive computations are parallelizable, we empirically demonstrate the usefulness of GPUs for JPEG XL by developing gjxl, a GPU-accelerated encoder that offloads perceptual analysis workloads to the GPU while keeping entropy/bitstream workloads on the CPU. **gjxl achieves 2.8× speedup vs. libjxl at default effort** while simultaneously producing smaller files via a more aggressive use of compute-intensive features. gjxl is permissively licensed and available at [https://github.com/yunho-c/gjxl](https://github.com/yunho-c/gjxl).
 
 > gjxl is still in early development. Please let us know in [issues](https://github.com/yunho-c/gjxl/issues) if you have any thoughts, feedback, or requests to share!
 
@@ -48,31 +48,40 @@ If you are impacted by these limitations, please feel free to let us know.
 
 ### Q&amp;A
 
-&gt;Expand: What is JPEG XL? How does JPEG XL work?
+<details>
+<summary>What is JPEG XL? How does JPEG XL work?</summary>
 
 JPEG XL is a modern image codec that typically achieves 30-60% smaller files compared to JPEG and 30-50% smaller files compared to PNG (lossless).
 
 Attach the diagram, and link users to the JPEG XL papers.
 
+</details>
 
 
-&gt;Expand: What's the point of this? When will I ever need this?
+<details>
+<summary>What's the point of this? When will I ever need this?</summary>
 
 From a research standpoint, this demonstrates for the first time that GPU-based JPEG XL codec implementation is a viable idea. We believe that more dramatic speedup would be possible in the future, as demonstrated in prior GPU acceleration literature on JPEG and JPEG2000.
 
 From a practical standpoint, gjxl is useful when converting a bunch of files into JPEG XL for archival purposes, since it's faster, especially when processing images in batch.
 
+</details>
 
 
-&gt;Expand: Did you use LLM assistance?
+<details>
+<summary>Did you use LLM assistance?</summary>
 
 Yes. You might have noticed from suboptimal code quality. This project serves primarily as a research platform rather than a safe, stable, production-ready library. We plan to migrate gjxl to Rust and write from scratch, after finalizing optimizations and design.
 
+</details>
 
 
-&gt;Expand: Does gjxl use more or less energy/battery compared to libjxl?
+<details>
+<summary>Does gjxl use more or less energy/battery compared to libjxl?</summary>
 
-Likely more, although we'd have to experiment to be sure. 
+Likely more, although we'd have to experiment to be sure.
+
+</details>
 
 ## License
 
@@ -84,11 +93,11 @@ gjxl is licensed under [Apache-2.0](LICENSE). Third-party dependencies retain th
 
 **Table of Contents**
 
-- TODO: generate/finalize before committing!
-- Theory of operation
-- Encode an image
-- Use as a library
-- Development
+- [Theory of operation](#theory-of-operation)
+- [Encode an image](#encode-an-image)
+- [Use as a library](#use-as-a-library)
+- [Development](#development)
+- [Documentation](#documentation)
 
 
 
@@ -108,10 +117,10 @@ JPEG XL's encoding pipeline is complex, yet most computations expose data parall
   - Trial quantization/reconstruction (inverse DCT, CfL, adaptive filtering, XYB conversion)
   - Perceptual refinement using Butteraugli perceptual error metric
 - Tokenization
-  - Zero-counting, histogramming, 
+  - Zero-counting, histogramming,
   - Overlapped with DC tokenization and entropy coding, running on CPU
 
-Remaining stages (entropy coding and bitstream assembly) are comparatively serial and remain on the CPU. 
+Remaining stages (entropy coding and bitstream assembly) are comparatively serial and remain on the CPU.
 
 ---
 
@@ -162,7 +171,7 @@ build/release/gjxl_encode --backend metal --distance 1.0 input.pfm metal.jxl
 build/cuda/gjxl_encode --backend cuda --distance 1.0 input.pfm cuda.jxl
 ```
 
-Default automatic target-size and maximum-error requests stay on CPU. → okay this is a problem and should be fixed
+Default automatic target-size and maximum-error requests stay on CPU. → okay this is a problem and should be fixed
 
 ### Use as a library
 
