@@ -132,12 +132,9 @@ python3 tools/encode_image.py --encoder build/release/gjxl_encode \
 
 ### Quality and effort
 
-`--distance` is a positive Butteraugli target: smaller values request higher
-quality and generally larger files. Start with `1.0`. It is an encoder target,
-not a guarantee that every decoded image will measure exactly that distance.
-Distance `0` is not a lossless mode.
+`--distance` is a positive Butteraugli target: smaller values request higher quality.
 
-> TODO: add a quality/distance map image here
+![libjxl quality-to-distance mapping: quality 90 corresponds to distance 1.0](assets/libjxl_distance_quality_colorbar.svg)
 
 `--effort` controls the amount of search and refinement; the default is `7`.
 
