@@ -279,6 +279,53 @@ void Invalid(Encoder& encoder) {
   batch.count = 0; Check(gjxl_encoder_encode_device(encoder.value, &batch, &options, nullptr));
   std::cout << "{\"invalid_arguments\":true,\"tiny_cap_rejected\":true}" << std::endl;
 }
+// Correctness/endurance only: do not collect throughput on a loaded host.
+void Endurance(Encoder& encoder, const std::vector<Tile>& tiles, size_t reps) {
+  const auto accurate_rss = [] {
+    // statm's batched per-CPU accounting can fluctuate by several MiB with
+    // sixteen workers. Use the precise rollup for the memory plateau gate.
+    std::ifstream file("/proc/self/smaps_rollup");
+    std::string line;
+    while (std::getline(file, line)) {
+      if (line.rfind("Rss:", 0) == 0)
+        return std::stoull(line.substr(4)) * 1024ull;
+    }
+    throw std::runtime_error("Cannot read smaps_rollup RSS");
+  };
+  const size_t before_input = Vram();
+  DeviceTiles device(tiles, 2);
+  const size_t input_backing = Vram() - before_input;
+  auto batch = device.Batch(); auto options = Options(0);
+  Outputs reference(tiles.size());
+  Check(gjxl_encoder_encode_device(encoder.value, &batch, &options, reference.values.data()));
+  {
+    Outputs warm(tiles.size());
+    Check(gjxl_encoder_encode_device(encoder.value, &batch, &options, warm.values.data()));
+    Compare(reference, warm);
+  }
+  for (size_t r = 0; r < reps; ++r) {
+    {
+      Outputs out(tiles.size());
+      Check(gjxl_encoder_encode_device(encoder.value, &batch, &options, out.values.data()));
+      Compare(reference, out);
+    }
+    const size_t encoder_vram = Vram() - input_backing;
+    Require(encoder_vram <= (uint64_t{2048} << 20), "Endurance exceeded cap");
+    std::cout << "{\"endurance\":true,\"encodes\":" << (r + 1) * tiles.size()
+              << ",\"identity\":true,\"bytes\":" << reference.Bytes()
+              << ",\"rss_bytes\":" << accurate_rss() << ",\"statm_rss_bytes\":" << Rss()
+              << ",\"vram_bytes\":" << Vram()
+              << ",\"caller_device_backing_bytes\":" << input_backing
+              << ",\"encoder_vram_bytes\":" << encoder_vram;
+#ifdef GJXL_E3_GATE
+    const auto managed = gjxl::resource_budget_internal::DefaultResourceBudget().snapshot();
+    const auto usage = mallinfo2();
+    std::cout << ",\"managed_live_bytes\":" << managed.total.live_capacity_bytes
+              << ",\"malloc_live_bytes\":" << usage.uordblks + usage.hblkhd;
+#endif
+    std::cout << "}" << std::endl;
+  }
+}
 void Measure(Encoder& encoder, const std::vector<Tile>& tiles, size_t reps,
              bool leak, bool trace, bool heap = false) {
   const size_t before_input = Vram();
@@ -289,6 +336,7 @@ void Measure(Encoder& encoder, const std::vector<Tile>& tiles, size_t reps,
     Outputs warm(tiles.size()); Check(gjxl_encoder_encode_device(encoder.value, &batch, &options, warm.values.data()));
   }
   if (trace) Cuda(cudaProfilerStart());
+  const double profile_cpu = trace ? Cpu() : 0.0;
   size_t done = 0;
   for (size_t r = 0; r < reps; ++r) {
     for (int path : (leak || trace ? std::vector<int>{1} : std::vector<int>{0, 1, 1, 0})) {
@@ -322,13 +370,18 @@ void Measure(Encoder& encoder, const std::vector<Tile>& tiles, size_t reps,
     (void)heap;
 #endif
   }
-  if (trace) { Cuda(cudaProfilerStop()); std::cout << "{\"profile_tiles\":" << done << "}" << std::endl; }
+  if (trace) {
+    const double used_cpu = Cpu() - profile_cpu;
+    Cuda(cudaProfilerStop());
+    std::cout << "{\"profile_tiles\":" << done << ",\"cpu_seconds\":" << used_cpu
+      << "}" << std::endl;
+  }
 }
 }  // namespace
 
 int main(int argc, char** argv) {
   try {
-    Require(argc >= 4, "Usage: gjxl_resident_gate test|identity|bench|leak|trace CONTEXTS REPS [OUTDIR for identity] [tile.rgb or directory ...]");
+    Require(argc >= 4, "Usage: gjxl_resident_gate test|identity|bench|leak|trace|endurance CONTEXTS REPS [OUTDIR for identity] [tile.rgb or directory ...]");
     const std::string mode = argv[1]; const unsigned contexts = std::stoul(argv[2]); const size_t reps = std::stoul(argv[3]);
     Require(contexts >= 1 && contexts <= 16 && reps >= 1, "Invalid contexts/reps");
     Cuda(cudaSetDevice(0));
@@ -359,6 +412,7 @@ int main(int argc, char** argv) {
     if (mode == "test" || mode == "edges") {
       Invalid(encoder); Identity(encoder, contexts, tiles, mode == "edges" ? argv[4] : "", true); Concurrency(encoder, tiles); Events(encoder);
     } else if (mode == "identity") { Identity(encoder, contexts, tiles, argv[4], false); }
+    else if (mode == "endurance") Endurance(encoder, tiles, reps);
     else if (mode == "bench" || mode == "devicebench" || mode == "leak" || mode == "heap" || mode == "trace") Measure(encoder, tiles, reps, mode == "leak" || mode == "heap" || mode == "devicebench", mode == "trace", mode == "heap");
     else throw std::runtime_error("Unknown gate mode");
     encoder.Destroy(); return 0;
