@@ -22,7 +22,8 @@ namespace gjxl::codestream_internal {
 /// a target-size retry may cross distance 0.5 without exceeding admission.
 [[nodiscard]] constexpr bool UseEpfSharpnessSearch(
     const VarDctEncodingOptions& options) noexcept {
-  return options.adaptive_epf_sharpness && options.effort >= 6 &&
+  return options.epf_sharpness_search.value_or(
+           options.adaptive_epf_sharpness && options.effort >= 6) &&
          options.backend != VarDctBackendPreference::kCuda &&
          options.rate_control_mode != VarDctRateControlMode::kMaximumError &&
          options.gpu_aq_mode != GpuAdaptiveQuantizationMode::kMaximumThroughput;
@@ -32,6 +33,11 @@ namespace gjxl::codestream_internal {
 /// DC quantization and smoothing follow their independent effort policies.
 [[nodiscard]] constexpr AcCoefficientDecisionMode ResolveAcCoefficientDecision(
   const VarDctEncodingOptions& options) noexcept {
+  if (options.adjusted_ac_quantization.has_value()) {
+    return *options.adjusted_ac_quantization
+      ? AcCoefficientDecisionMode::kAdjustedSharedQuant
+      : AcCoefficientDecisionMode::kFixedRawQuant;
+  }
   const bool fixed_raw = options.effort >= 1 && options.effort <= 4 &&
     options.density_mode == VarDctDensityMode::kDefault &&
     options.rate_control_mode != VarDctRateControlMode::kMaximumError &&
@@ -45,6 +51,7 @@ namespace gjxl::codestream_internal {
 /// entropy modes, ordinary DC rounding, and other efforts on their own policy.
 [[nodiscard]] constexpr bool UseDcUintSearch(
   const VarDctEncodingOptions& options) noexcept {
+  if (options.dc_uint_search.has_value()) return *options.dc_uint_search;
   return options.effort == 4 &&
     options.density_mode == VarDctDensityMode::kDefault &&
     options.compression_mode == VarDctCompressionMode::kAutomatic &&
@@ -56,8 +63,14 @@ namespace gjxl::codestream_internal {
 /// Zero denotes the established fast regression. This changes no host/device
 /// arena dimensions; it adds only bounded threadgroup-local shader scratch.
 [[nodiscard]] constexpr uint32_t FinalColorCorrelationIterations(
-  const VarDctEncodingOptions& options, bool selected_metal) noexcept {
-  return selected_metal && options.effort >= 8 &&
+  const VarDctEncodingOptions& options, bool selected_accelerator) noexcept {
+  if (options.final_cfl_iterations.has_value()) {
+    return selected_accelerator &&
+        options.gpu_aq_mode == GpuAdaptiveQuantizationMode::kFullyResident &&
+        options.rate_control_mode != VarDctRateControlMode::kMaximumError
+      ? static_cast<uint32_t>(*options.final_cfl_iterations) : 0u;
+  }
+  return selected_accelerator && options.effort >= 8 &&
       options.gpu_aq_mode == GpuAdaptiveQuantizationMode::kFullyResident &&
       options.density_mode == VarDctDensityMode::kDefault &&
       options.rate_control_mode != VarDctRateControlMode::kMaximumError
@@ -68,6 +81,7 @@ namespace gjxl::codestream_internal {
 /// The caller validates effort and density mode before using this recipe.
 [[nodiscard]] constexpr size_t AdaptiveQuantizationIterations(
   const VarDctEncodingOptions& options) noexcept {
+  if (options.aq_updates.has_value()) return static_cast<size_t>(*options.aq_updates);
   if (options.density_mode == VarDctDensityMode::kHighDensity) return 4;
   if (options.effort <= 3) return 0;
   // Ordinary e4-5 skip perceptual refinement; explicit error/density recipes
@@ -85,6 +99,7 @@ namespace gjxl::codestream_internal {
 /// recipes retain their existing placement policy, independently of writer mode.
 [[nodiscard]] constexpr bool UseDenseDct32Search(
   const VarDctEncodingOptions& options) noexcept {
+  if (options.ac_search_spacing.has_value()) return *options.ac_search_spacing == 1;
   return options.effort == 10 &&
     options.density_mode == VarDctDensityMode::kDefault &&
     options.rate_control_mode != VarDctRateControlMode::kMaximumError;
@@ -94,6 +109,7 @@ namespace gjxl::codestream_internal {
 /// Explicit high-density and maximum-error modes preserve their search policy.
 [[nodiscard]] constexpr bool UseFixedDct8Strategy(
   const VarDctEncodingOptions& options) noexcept {
+  if (options.fixed_dct8.has_value()) return *options.fixed_dct8;
   return options.effort <= 4 &&
     options.density_mode == VarDctDensityMode::kDefault &&
     options.rate_control_mode != VarDctRateControlMode::kMaximumError;
@@ -103,7 +119,11 @@ namespace gjxl::codestream_internal {
 /// Explicit transform/error modes retain their existing perceptual recipe.
 [[nodiscard]] constexpr bool UseUniformInitialQuantization(
   const VarDctEncodingOptions& options) noexcept {
-  return UseFixedDct8Strategy(options) &&
+  if (options.uniform_initial_quantization.has_value())
+    return *options.uniform_initial_quantization;
+  return options.effort <= 4 &&
+    options.density_mode == VarDctDensityMode::kDefault &&
+    options.rate_control_mode != VarDctRateControlMode::kMaximumError &&
     options.gpu_aq_mode != GpuAdaptiveQuantizationMode::kMaximumThroughput;
 }
 
@@ -112,8 +132,12 @@ inline void ConfigureInitialQuantizationPolicy(
   CpuQuantizationPipelineOptions* pipeline) noexcept {
   pipeline->uniform_initial_quantization = UseUniformInitialQuantization(options);
   pipeline->adaptive_quantization.search_epf_sharpness = UseEpfSharpnessSearch(options);
+  const bool low_effort_frontend = options.effort <= 4 &&
+    options.density_mode == VarDctDensityMode::kDefault &&
+    options.rate_control_mode != VarDctRateControlMode::kMaximumError &&
+    options.gpu_aq_mode != GpuAdaptiveQuantizationMode::kMaximumThroughput;
   pipeline->adaptive_quantization.profile.loop_filter.gaborish =
-    !pipeline->uniform_initial_quantization;
+    options.gaborish.value_or(!low_effort_frontend);
 }
 
 /// Internal complete-encode result. Candidate bytes stay charged until the

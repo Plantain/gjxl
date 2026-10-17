@@ -129,6 +129,68 @@ GJXLResult Guard(Function&& function) noexcept {
   }
 }
 
+GJXLResult ParsePresetOptions(const GJXLEncoderOptions& options,
+                              gjxl::VarDctEncodingOptions* out) {
+  // Field bounds are checked before reading, including partially present tails.
+#define GJXL_HAS_PRESET(field) \
+  (options.struct_size >= offsetof(GJXLEncoderOptions, field) + sizeof(options.field))
+  if (GJXL_HAS_PRESET(aq_updates)) {
+    if (options.aq_updates < -1 || options.aq_updates > 4)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "AQ updates must be -1 or [0, 4]");
+    if (options.aq_updates != -1) out->aq_updates = options.aq_updates;
+  }
+  if (GJXL_HAS_PRESET(entropy_behavior)) {
+    switch (options.entropy_behavior) {
+    case GJXL_ENTROPY_AUTOMATIC: break;
+    case GJXL_ENTROPY_BALANCED:
+      out->entropy_behavior = gjxl::VarDctEntropyBehavior::kBalanced; break;
+    case GJXL_ENTROPY_RATE_OPTIMIZED:
+      out->entropy_behavior = gjxl::VarDctEntropyBehavior::kRateOptimized; break;
+    default: return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid entropy behavior");
+    }
+  }
+  if (GJXL_HAS_PRESET(coefficient_order_behavior)) {
+    switch (options.coefficient_order_behavior) {
+    case GJXL_COEFFICIENT_ORDER_AUTOMATIC: break;
+    case GJXL_COEFFICIENT_ORDER_SAMPLED:
+      out->coefficient_order_behavior =
+        gjxl::VarDctCoefficientOrderBehavior::kEffort7Dct8Sampled; break;
+    case GJXL_COEFFICIENT_ORDER_FULL:
+      out->coefficient_order_behavior = gjxl::VarDctCoefficientOrderBehavior::kFull; break;
+    default: return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid coefficient-order behavior");
+    }
+  }
+  if (GJXL_HAS_PRESET(final_cfl_iterations)) {
+    if (options.final_cfl_iterations < -1 || options.final_cfl_iterations > 20)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Final CfL iterations must be -1 or [0, 20]");
+    if (options.final_cfl_iterations != -1)
+      out->final_cfl_iterations = options.final_cfl_iterations;
+  }
+  if (GJXL_HAS_PRESET(ac_search_spacing)) {
+    if (options.ac_search_spacing > 2)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "AC search spacing must be 0, 1 or 2");
+    if (options.ac_search_spacing != 0)
+      out->ac_search_spacing = static_cast<int32_t>(options.ac_search_spacing);
+  }
+#define GJXL_PARSE_FEATURE(field) \
+  if (GJXL_HAS_PRESET(field)) { \
+    if (options.field < GJXL_FEATURE_AUTOMATIC || options.field > GJXL_FEATURE_ENABLED) \
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid " #field); \
+    if (options.field != GJXL_FEATURE_AUTOMATIC) \
+      out->field = options.field == GJXL_FEATURE_ENABLED; \
+  }
+  GJXL_PARSE_FEATURE(epf_sharpness_search);
+  GJXL_PARSE_FEATURE(fixed_dct8);
+  GJXL_PARSE_FEATURE(uniform_initial_quantization);
+  GJXL_PARSE_FEATURE(gaborish);
+  GJXL_PARSE_FEATURE(adjusted_ac_quantization);
+  GJXL_PARSE_FEATURE(adaptive_quantization_matrices);
+  GJXL_PARSE_FEATURE(dc_uint_search);
+#undef GJXL_PARSE_FEATURE
+#undef GJXL_HAS_PRESET
+  return GJXL_OK;
+}
+
 GJXLResult PublishCodestream(const gjxl::codestream_internal::CodestreamBuffer& codestream,
                             GJXLBuffer* output) {
   GJXLResult result;
@@ -393,6 +455,10 @@ GJXLResult gjxl_encoder_options_init(
       options->dc_quantization = GJXL_DC_QUANTIZATION_AUTOMATIC;
     if (caller_size >= kEncoderOptionsDcSmoothingSize)
       options->adaptive_dc_smoothing = GJXL_DC_SMOOTHING_AUTOMATIC;
+    if (caller_size >= offsetof(GJXLEncoderOptions, aq_updates) + sizeof(int32_t))
+      options->aq_updates = -1;
+    if (caller_size >= offsetof(GJXLEncoderOptions, final_cfl_iterations) + sizeof(int32_t))
+      options->final_cfl_iterations = -1;
     return GJXL_OK;
   });
 }
@@ -576,6 +642,8 @@ GJXLResult gjxl_encode(
     encoding_options.backend = context->backend;
     encoding_options.cpu_thread_count = context->cpu_thread_count;
     encoding_options.execution_domain = context->execution_domain;
+    result = ParsePresetOptions(*options, &encoding_options);
+    if (result != GJXL_OK) return result;
     gjxl::codestream_internal::WorkflowAdmission admission;
     size_t admission_bytes = 0;
     if (gjxl::resource_budget_internal::CurrentResourceContext().reservation == nullptr) {

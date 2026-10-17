@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "codestream/dc_prediction.h"
+#include "codestream/encoder.h"
 #include "codestream/entropy_behavior.h"
 #include "core/ac_strategy.h"
 #include "core/execution_domain.h"
@@ -68,9 +69,9 @@ struct VarDctEncodingOptions {
   float butteraugli_target = 1.0f;
   /// User-facing speed-versus-refinement intent in [1, 10]. Effort 7 preserves
   /// the established two-update adaptive-quantization policy and uses
-  /// deterministic DCT8-only coefficient-order sampling. Efforts 8-10 use full
+  /// deterministic coefficient-order sampling for DCT8-only frames. Efforts 8-10 use full
   /// HybridUint/alphabet search with balanced complete-codestream fallback.
-  /// Ordinary resident Metal efforts 8-10 also use eight-step nonlinear final
+  /// Ordinary resident CUDA/Metal efforts 8-10 also use eight-step nonlinear final
   /// chroma-from-luma; effort 8 runs three AQ updates and efforts 9-10 run four.
   /// Ordinary effort 10 also searches DCT32-family placements at every base
   /// block; efforts 5-9 use two-block spacing for these larger families.
@@ -154,6 +155,26 @@ struct VarDctEncodingOptions {
   /// The resolved value
   /// is signaled to the decoder and used for reconstruction during AQ.
   std::optional<bool> adaptive_dc_smoothing;
+  /// Independent preset overrides. Unset values preserve the effort policy.
+  /// Explicit values take precedence over density/compression compatibility
+  /// modes; backend and rate-control capability restrictions still apply.
+  std::optional<int32_t> aq_updates;  // [0, 4].
+  std::optional<VarDctEntropyBehavior> entropy_behavior;  // Balanced or rate-optimized.
+  std::optional<VarDctCoefficientOrderBehavior> coefficient_order_behavior;
+  /// Zero selects fast regression; [1, 20] selects nonlinear final CfL on
+  /// fully resident CUDA/Metal. Automatic e8-10 uses eight iterations.
+  std::optional<int32_t> final_cfl_iterations;
+  /// DCT32-family anchor spacing in base blocks: 1 (dense) or 2 (normal).
+  std::optional<int32_t> ac_search_spacing;
+  /// Explicit on/off bypasses the effort gate on CPU/Metal. CUDA stays fixed.
+  std::optional<bool> epf_sharpness_search;
+  /// Remaining low-effort policies, exposed independently for experiments.
+  std::optional<bool> fixed_dct8;
+  std::optional<bool> uniform_initial_quantization;
+  std::optional<bool> gaborish;
+  std::optional<bool> adjusted_ac_quantization;
+  std::optional<bool> adaptive_quantization_matrices;
+  std::optional<bool> dc_uint_search;
 };
 
 /// Effort-three DC-smoothing scope, independent of the serializer intensity.

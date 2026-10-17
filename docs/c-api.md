@@ -20,8 +20,51 @@ DC quantization and adaptive DC smoothing default to effort-dependent automatic
 selection: ordinary rounding at efforts 1–3, prediction-aware quantization at
 4–10, and smoothing enabled from effort 3. Ordinary e1–4 retain the initial
 AC quantizer with fixed Y thresholds. Explicit DC values override each independently;
-the 28-byte layout and earlier field offsets are unchanged. See
+the original 28-byte prefix and its field offsets are unchanged. See
 [DC controls and ABI values](dc-processing.md#controls-and-reconstruction-contract).
+
+## Independent preset controls
+
+`GJXLEncoderOptions` appends preset fields after the 28-byte DC-control prefix
+(total size 76 bytes). Always call `gjxl_encoder_options_init`: absent fields
+in older or partially extended caller structs select automatic behavior, and
+initialization never writes past the supplied size. Existing callers preserve
+byte-identical defaults. Explicit presets take precedence over effort and the
+older compression override, while backend/rate-control capability gates remain.
+
+| C field | Default / values | `gjxl_encode` and `gjxl_tiles` flag |
+| --- | --- | --- |
+| `aq_updates` | -1 automatic; 0–4 updates | `--aq-updates auto\|0..4` |
+| `entropy_behavior` | 0 automatic; 1 balanced; 2 rate-optimized | `--entropy-behavior auto\|balanced\|rate-optimized` |
+| `coefficient_order_behavior` | 0 automatic; 1 sampled DCT8; 2 full | `--coefficient-orders auto\|sampled\|full` |
+| `final_cfl_iterations` | -1 automatic; 0 fast; 1–20 nonlinear | `--final-cfl-iterations auto\|0..20` |
+| `ac_search_spacing` | 0 automatic; 1 or 2 base blocks | `--ac-search-spacing auto\|1\|2` |
+| `epf_sharpness_search` | 0 automatic; 1 off; 2 on | `--epf-sharpness-search auto\|off\|on` |
+
+The sampled order policy applies only when a frame contains DCT8 alone;
+mixed-transform frames use full populations under either setting. Changing
+this option need not change satellite tile codestreams.
+
+The remaining `GJXLFeatureOverride` fields use 0 automatic, 1 disabled, 2 enabled:
+`fixed_dct8`, `uniform_initial_quantization`, `gaborish`,
+`adjusted_ac_quantization`, `adaptive_quantization_matrices`, and `dc_uint_search`.
+Their flags use hyphens in place of underscores and accept `auto|off|on`.
+These expose lower-effort frontend and DC policies for controlled experiments.
+DC quantization/smoothing retain their existing controls and enum values.
+
+On ordinary resident CUDA **and** Metal, automatic e8–10 already uses eight
+nonlinear final CfL iterations. Explicit CfL applies only to fully resident GPU
+Butteraugli/target-size encoding; CPU and maximum-error paths retain their
+existing policy. CUDA currently uses fixed EPF sharpness even when search is
+requested. Explicit EPF search on CPU/Metal bypasses its effort threshold but
+retains distance and rate-control restrictions. No CUDA EPF search was added.
+
+Example: `gjxl_tiles one input.ppm output.jxl 1.2 7 --entropy-behavior
+rate-optimized --coefficient-orders full`. For throughput, place flags after
+`bench CONTEXTS REPS DISTANCE EFFORT` and before the raw RGB8 tile paths.
+`dump DIRECTORY DISTANCE EFFORT [flags] tiles...` writes each codestream for
+byte-comparison gates. `gjxl_encode` accepts the same preset flags alongside
+its existing input/rate-control options.
 
 ## Current implementation boundary
 

@@ -53,7 +53,13 @@ static int CheckInitializers(void) {
             encoder_options.compression_mode == GJXL_COMPRESSION_AUTOMATIC &&
             encoder_options.dc_prediction == GJXL_DC_PREDICTION_WEIGHTED &&
             encoder_options.dc_quantization == GJXL_DC_QUANTIZATION_AUTOMATIC &&
-            encoder_options.adaptive_dc_smoothing == GJXL_DC_SMOOTHING_AUTOMATIC,
+            encoder_options.adaptive_dc_smoothing == GJXL_DC_SMOOTHING_AUTOMATIC &&
+            encoder_options.aq_updates == -1 &&
+            encoder_options.entropy_behavior == GJXL_ENTROPY_AUTOMATIC &&
+            encoder_options.coefficient_order_behavior == GJXL_COEFFICIENT_ORDER_AUTOMATIC &&
+            encoder_options.final_cfl_iterations == -1 &&
+            encoder_options.ac_search_spacing == 0 &&
+            encoder_options.epf_sharpness_search == GJXL_FEATURE_AUTOMATIC,
         "encoder defaults are incorrect");
 
   GJXLEncoderOptions legacy_encoder;
@@ -333,6 +339,58 @@ static int CheckEncoding(GJXLContext* context) {
           rgb_output.data[0] == 0xff && rgb_output.data[1] == 0x0a &&
           gjxl_get_last_error()[0] == '\0',
         "RGB encoding returned an invalid codestream");
+
+  // Every historical/partial tail must leave absent preset fields automatic.
+  for (size_t size = offsetof(GJXLEncoderOptions, aq_updates);
+       size <= sizeof(GJXLEncoderOptions); ++size) {
+    GJXLEncoderOptions prefix;
+    memset(&prefix, 0xa5, sizeof(prefix));
+    CHECK(gjxl_encoder_options_init(&prefix, size) == GJXL_OK,
+          "preset prefix initialization failed");
+    const unsigned char* raw = (const unsigned char*)&prefix;
+    for (size_t i = size; i < sizeof(prefix); ++i)
+      CHECK(raw[i] == 0xa5, "preset initializer overwrote caller boundary");
+    GJXLBuffer prefix_output = {NULL, 0};
+    CHECK(gjxl_encode(context, &rgb_view, &prefix, &prefix_output) == GJXL_OK,
+          "preset prefix encoding failed");
+    CHECK(prefix_output.size == rgb_output.size &&
+          memcmp(prefix_output.data, rgb_output.data, rgb_output.size) == 0,
+          "absent or automatic preset fields changed output");
+    gjxl_buffer_free(&prefix_output);
+  }
+  GJXLEncoderOptions explicit_preset = options;
+  explicit_preset.aq_updates = 2;
+  explicit_preset.entropy_behavior = GJXL_ENTROPY_BALANCED;
+  explicit_preset.coefficient_order_behavior = GJXL_COEFFICIENT_ORDER_SAMPLED;
+  explicit_preset.final_cfl_iterations = 0;
+  explicit_preset.ac_search_spacing = 2;
+  explicit_preset.epf_sharpness_search = GJXL_FEATURE_DISABLED;
+  GJXLBuffer preset_output = {NULL, 0};
+  CHECK(gjxl_encode(context, &rgb_view, &explicit_preset, &preset_output) == GJXL_OK &&
+        preset_output.size == rgb_output.size &&
+        memcmp(preset_output.data, rgb_output.data, rgb_output.size) == 0,
+        "explicit e7 recipe differs from automatic recipe");
+  gjxl_buffer_free(&preset_output);
+  for (int field = 0; field < 12; ++field) {
+    GJXLEncoderOptions invalid = options;
+    switch (field) {
+    case 0: invalid.aq_updates = 5; break;
+    case 1: invalid.aq_updates = -2; break;
+    case 2: invalid.entropy_behavior = 99; break;
+    case 3: invalid.coefficient_order_behavior = 99; break;
+    case 4: invalid.final_cfl_iterations = 21; break;
+    case 5: invalid.final_cfl_iterations = -2; break;
+    case 6: invalid.ac_search_spacing = 3; break;
+    case 7: invalid.epf_sharpness_search = 3; break;
+    case 8: invalid.fixed_dct8 = -1; break;
+    case 9: invalid.gaborish = 3; break;
+    case 10: invalid.adaptive_quantization_matrices = 3; break;
+    case 11: invalid.dc_uint_search = 3; break;
+    }
+    CHECK(ExpectEncodeError(context, &rgb_view, &invalid,
+                           GJXL_ERROR_INVALID_ARGUMENT, "invalid preset"),
+          "invalid preset accepted or changed output");
+  }
 
   GJXLEncoderOptions legacy_options = options;
   legacy_options.struct_size =

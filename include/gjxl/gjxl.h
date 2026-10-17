@@ -126,6 +126,27 @@ enum {
   GJXL_DC_SMOOTHING_AUTOMATIC = 2,
 };
 
+typedef int32_t GJXLEntropyBehavior;
+enum {
+  GJXL_ENTROPY_AUTOMATIC = 0,
+  GJXL_ENTROPY_BALANCED = 1,
+  GJXL_ENTROPY_RATE_OPTIMIZED = 2,
+};
+
+typedef int32_t GJXLCoefficientOrderBehavior;
+enum {
+  GJXL_COEFFICIENT_ORDER_AUTOMATIC = 0,
+  GJXL_COEFFICIENT_ORDER_SAMPLED = 1,
+  GJXL_COEFFICIENT_ORDER_FULL = 2,
+};
+
+typedef int32_t GJXLFeatureOverride;
+enum {
+  GJXL_FEATURE_AUTOMATIC = 0,
+  GJXL_FEATURE_DISABLED = 1,
+  GJXL_FEATURE_ENABLED = 2,
+};
+
 typedef struct {
   uint32_t struct_size;
   float distance;
@@ -137,7 +158,7 @@ typedef struct {
   /// AQ updates; effort 6 adds one update. High-density and maximum-error
   /// overrides preserve their existing refinement policies.
   /// Efforts 8-10 share the rate-optimized writer and, on ordinary fully
-  /// resident Metal, eight-step nonlinear final chroma-from-luma.
+  /// resident CUDA/Metal, eight-step nonlinear final chroma-from-luma.
   /// Effort 8 uses three AQ updates; efforts 9-10 use four. Ordinary effort 10
   /// also searches the larger transform placements at every 8x8 base block.
   int32_t effort;
@@ -153,6 +174,25 @@ typedef struct {
   /// 0 disables, 1 enables, 2 follows effort (off at 1-2, on at 3-10).
   /// Defaults to AUTOMATIC (2), including older sizes without this field.
   uint32_t adaptive_dc_smoothing;
+  /// Independent preset controls. Absent fields in older struct sizes use
+  /// automatic defaults. Explicit controls override effort and compatibility
+  /// modes without changing other features. Initialize with the helper below.
+  int32_t aq_updates;  // -1 automatic, otherwise [0, 4].
+  GJXLEntropyBehavior entropy_behavior;
+  GJXLCoefficientOrderBehavior coefficient_order_behavior;
+  /// -1 automatic; 0 fast regression; [1, 20] nonlinear final CfL on resident
+  /// CUDA/Metal. Automatic e8-10 uses eight iterations on both GPU backends.
+  int32_t final_cfl_iterations;
+  /// 0 automatic; 1 or 2 base blocks between DCT32-family search anchors.
+  uint32_t ac_search_spacing;
+  /// CUDA retains fixed sharpness even when enabled. CPU/Metal can search.
+  GJXLFeatureOverride epf_sharpness_search;
+  GJXLFeatureOverride fixed_dct8;
+  GJXLFeatureOverride uniform_initial_quantization;
+  GJXLFeatureOverride gaborish;
+  GJXLFeatureOverride adjusted_ac_quantization;
+  GJXLFeatureOverride adaptive_quantization_matrices;
+  GJXLFeatureOverride dc_uint_search;
 } GJXLEncoderOptions;
 
 typedef int32_t GJXLPixelFormat;
@@ -202,7 +242,7 @@ GJXL_API GJXLResult gjxl_execution_domain_snapshot(const GJXLExecutionDomain *do
                                                    size_t caller_size) GJXL_NOEXCEPT;
 
 /// Initializes encoder options with distance 1.0, effort 7, and automatic
-/// compression behavior with gradient DC prediction.
+/// compression behavior with weighted DC prediction and automatic presets.
 /// caller_size must describe the complete caller allocation and fit uint32_t.
 GJXL_API GJXLResult gjxl_encoder_options_init(
   GJXLEncoderOptions* options, size_t caller_size) GJXL_NOEXCEPT;

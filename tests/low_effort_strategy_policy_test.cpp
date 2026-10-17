@@ -57,6 +57,36 @@ bool CheckPolicy() {
   return true;
 }
 
+bool CheckPresetOverrides() {
+  for (int effort : {7, 8}) {
+    VarDctEncodingOptions o;
+    o.effort = effort;
+    for (int updates = 0; updates <= 4; ++updates) {
+      o.aq_updates = updates;
+      CpuWorkflowStoragePlan plan;
+      if (!Check(AdaptiveQuantizationIterations(o) == static_cast<size_t>(updates) &&
+                 ComputeCpuWorkflowStoragePlan({65, 63}, {o}, &plan).ok() &&
+                 plan.score_count == static_cast<size_t>(updates + 1),
+                 "AQ override disagrees with storage admission")) return false;
+    }
+    o.entropy_behavior = VarDctEntropyBehavior::kBalanced;
+    o.coefficient_order_behavior = VarDctCoefficientOrderBehavior::kFull;
+    o.final_cfl_iterations = 0;
+    o.ac_search_spacing = 1;
+    if (!Check(ResolveEntropyBehavior(o) == VarDctEntropyBehavior::kBalanced &&
+               ResolveCoefficientOrderBehavior(o) == VarDctCoefficientOrderBehavior::kFull &&
+               FinalColorCorrelationIterations(o, true) == 0 && UseDenseDct32Search(o),
+               "Independent preset overrides were ignored")) return false;
+    o.final_cfl_iterations = 8;
+    o.fixed_dct8 = true;
+    if (!Check(FinalColorCorrelationIterations(o, true) == 8 &&
+               FinalColorCorrelationIterations(o, false) == 0 &&
+               UseFixedDct8Strategy(o) && !UseUniformInitialQuantization(o),
+               "CfL capability or independent frontend policy changed")) return false;
+  }
+  return true;
+}
+
 bool CheckLowEffortQuantizationPolicy() {
   for (int effort = 1; effort <= 10; ++effort) {
     for (auto density : {VarDctDensityMode::kDefault,
@@ -239,7 +269,7 @@ bool CheckSearchStorage() {
 }  // namespace
 
 int main() {
-  return CheckPolicy() && CheckLowEffortQuantizationPolicy() &&
+  return CheckPolicy() && CheckPresetOverrides() && CheckLowEffortQuantizationPolicy() &&
     CheckProviderBypass() && CheckSearchStorage()
     ? EXIT_SUCCESS : EXIT_FAILURE;
 }

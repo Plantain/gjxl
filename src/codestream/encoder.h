@@ -17,9 +17,9 @@ class VarDctEncoderFrame;
 enum class VarDctCoefficientOrderBehavior : uint8_t {
   /// Derives coefficient orders from every transform anchor.
   kFull,
-  /// Matches libjxl's effort-7-like DCT8 policy by deterministically sampling
-  /// approximately half of transform anchors. Other order families remain
-  /// fully sampled.
+  /// Matches libjxl's effort-7-like policy by deterministically sampling
+  /// approximately half of transform anchors in DCT8-only frames. Frames
+  /// containing another transform family use full populations for all orders.
   kEffort7Dct8Sampled,
 };
 

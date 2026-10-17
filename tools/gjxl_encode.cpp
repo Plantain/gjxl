@@ -145,6 +145,7 @@ struct Options {
   gjxl::VarDctBackendPreference backend =
     gjxl::VarDctBackendPreference::kAutomatic;
   int32_t effort = 7;
+  gjxl::VarDctEncodingOptions preset;
   gjxl::VarDctDensityMode density_mode =
     gjxl::VarDctDensityMode::kDefault;
   gjxl::VarDctCompressionMode compression_mode =
@@ -154,7 +155,6 @@ struct Options {
   gjxl::VarDctDcPrediction dc_prediction = gjxl::kDefaultDcPrediction;
   gjxl::DcQuantizationMode dc_quantization = gjxl::DcQuantizationMode::kAutomatic;
   std::optional<bool> adaptive_dc_smoothing;
-  std::optional<bool> adaptive_epf_sharpness;
   bool collect_final_butteraugli_score = false;
 };
 
@@ -441,11 +441,73 @@ struct Options {
       if (candidate.adaptive_dc_smoothing.has_value()) return false;
       candidate.adaptive_dc_smoothing = argument == "--adaptive-dc-smoothing";
     } else if (argument == "--epf-sharpness-search") {
-      if (candidate.adaptive_epf_sharpness.has_value() || index + 1 >= argc)
+      if (candidate.preset.epf_sharpness_search.has_value() || index + 1 >= argc)
         return false;
       const std::string_view value = argv[++index];
-      if (value != "on" && value != "off") return false;
-      candidate.adaptive_epf_sharpness = value == "on";
+      if (value != "on" && value != "off" && value != "auto") return false;
+      if (value != "auto") candidate.preset.epf_sharpness_search = value == "on";
+    } else if (argument == "--aq-updates" || argument == "--final-cfl-iterations" ||
+               argument == "--ac-search-spacing") {
+      if (index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      auto& field = argument == "--aq-updates" ? candidate.preset.aq_updates
+        : argument == "--final-cfl-iterations" ? candidate.preset.final_cfl_iterations
+        : candidate.preset.ac_search_spacing;
+      if (field.has_value()) return false;
+      if (value != "auto") {
+        size_t number = 0;
+        const size_t maximum = argument == "--aq-updates" ? 4
+          : argument == "--final-cfl-iterations" ? 20 : 2;
+        if (value != "0" && !ParsePositiveSize(value, maximum, &number)) return false;
+        if (argument == "--ac-search-spacing" && number == 0) return false;
+        field = static_cast<int32_t>(number);
+      }
+    } else if (argument == "--entropy-behavior") {
+      if (candidate.preset.entropy_behavior || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "balanced")
+        candidate.preset.entropy_behavior = gjxl::VarDctEntropyBehavior::kBalanced;
+      else if (value == "rate-optimized")
+        candidate.preset.entropy_behavior = gjxl::VarDctEntropyBehavior::kRateOptimized;
+      else if (value != "auto") return false;
+    } else if (argument == "--coefficient-orders") {
+      if (candidate.preset.coefficient_order_behavior || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "full")
+        candidate.preset.coefficient_order_behavior = gjxl::VarDctCoefficientOrderBehavior::kFull;
+      else if (value == "sampled")
+        candidate.preset.coefficient_order_behavior = gjxl::VarDctCoefficientOrderBehavior::kEffort7Dct8Sampled;
+      else if (value != "auto") return false;
+    } else if (argument == "--fixed-dct8") {
+      if (candidate.preset.fixed_dct8.has_value() || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "on" || value == "off") candidate.preset.fixed_dct8 = value == "on";
+      else if (value != "auto") return false;
+    } else if (argument == "--uniform-initial-quantization") {
+      if (candidate.preset.uniform_initial_quantization.has_value() || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "on" || value == "off") candidate.preset.uniform_initial_quantization = value == "on";
+      else if (value != "auto") return false;
+    } else if (argument == "--gaborish") {
+      if (candidate.preset.gaborish.has_value() || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "on" || value == "off") candidate.preset.gaborish = value == "on";
+      else if (value != "auto") return false;
+    } else if (argument == "--adjusted-ac-quantization") {
+      if (candidate.preset.adjusted_ac_quantization.has_value() || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "on" || value == "off") candidate.preset.adjusted_ac_quantization = value == "on";
+      else if (value != "auto") return false;
+    } else if (argument == "--adaptive-quantization-matrices") {
+      if (candidate.preset.adaptive_quantization_matrices.has_value() || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "on" || value == "off") candidate.preset.adaptive_quantization_matrices = value == "on";
+      else if (value != "auto") return false;
+    } else if (argument == "--dc-uint-search") {
+      if (candidate.preset.dc_uint_search.has_value() || index + 1 >= argc) return false;
+      const std::string_view value = argv[++index];
+      if (value == "on" || value == "off") candidate.preset.dc_uint_search = value == "on";
+      else if (value != "auto") return false;
     } else if (argument == "--effort") {
       size_t effort = 0;
       if (effort_set || index + 1 >= argc ||
@@ -610,8 +672,14 @@ void PrintUsage(const char* executable) {
                "[--max-attempts N] "
                "[--size-selection under-budget|closest] "
                "[--effort 1..10] [--dc-prediction gradient|weighted] "
-               "[--epf-sharpness-search on|off] "
+               "[--epf-sharpness-search auto|on|off] "
                "[--dc-quantization auto|round|prediction-aware] [--adaptive-dc-smoothing|--no-adaptive-dc-smoothing] "
+               "[--aq-updates auto|0..4] [--entropy-behavior auto|balanced|rate-optimized] "
+               "[--coefficient-orders auto|sampled|full] [--final-cfl-iterations auto|0..20] "
+               "[--ac-search-spacing auto|1|2] "
+               "[--fixed-dct8 auto|on|off] [--uniform-initial-quantization auto|on|off] "
+               "[--gaborish auto|on|off] [--adjusted-ac-quantization auto|on|off] "
+               "[--adaptive-quantization-matrices auto|on|off] [--dc-uint-search auto|on|off] "
                "[--high-density] "
                "[--maximum-compression] "
                "[--backend auto|cpu|metal|cuda] "
@@ -647,7 +715,6 @@ int main(int argc, char** argv) {
       linear_rgb.const_view(),
       {.butteraugli_target = options.butteraugli_target,
        .effort = options.effort,
-       .adaptive_epf_sharpness = options.adaptive_epf_sharpness.value_or(false),
        .density_mode = options.density_mode,
        .compression_mode = options.compression_mode,
        .rate_control_mode = options.rate_control_mode,
@@ -663,7 +730,19 @@ int main(int argc, char** argv) {
            options.collect_final_butteraugli_score,
        .dc_prediction = options.dc_prediction,
        .dc_quantization = options.dc_quantization,
-       .adaptive_dc_smoothing = options.adaptive_dc_smoothing},
+       .adaptive_dc_smoothing = options.adaptive_dc_smoothing,
+       .aq_updates = options.preset.aq_updates,
+       .entropy_behavior = options.preset.entropy_behavior,
+       .coefficient_order_behavior = options.preset.coefficient_order_behavior,
+       .final_cfl_iterations = options.preset.final_cfl_iterations,
+       .ac_search_spacing = options.preset.ac_search_spacing,
+       .epf_sharpness_search = options.preset.epf_sharpness_search,
+       .fixed_dct8 = options.preset.fixed_dct8,
+       .uniform_initial_quantization = options.preset.uniform_initial_quantization,
+       .gaborish = options.preset.gaborish,
+       .adjusted_ac_quantization = options.preset.adjusted_ac_quantization,
+       .adaptive_quantization_matrices = options.preset.adaptive_quantization_matrices,
+       .dc_uint_search = options.preset.dc_uint_search},
       &codestream, &summary, &timing);
   if (!status.ok()) {
     std::cerr << "Encoding error: " << status.message() << '\n';

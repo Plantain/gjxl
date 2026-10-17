@@ -294,6 +294,22 @@ Status ValidateWorkflowOptions(Extent2D source, const VarDctEncodingOptions &opt
   if (options.effort < 1 || options.effort > 10) {
     return Status::InvalidArgument("VarDCT effort must be in [1, 10]");
   }
+  if (options.aq_updates && (*options.aq_updates < 0 || *options.aq_updates > 4))
+    return Status::InvalidArgument("AQ updates must be in [0, 4]");
+  if (options.final_cfl_iterations &&
+      (*options.final_cfl_iterations < 0 || *options.final_cfl_iterations > 20))
+    return Status::InvalidArgument("Final CfL iterations must be in [0, 20]");
+  if (options.ac_search_spacing &&
+      *options.ac_search_spacing != 1 && *options.ac_search_spacing != 2)
+    return Status::InvalidArgument("AC search spacing must be 1 or 2");
+  if (options.entropy_behavior &&
+      *options.entropy_behavior != VarDctEntropyBehavior::kBalanced &&
+      *options.entropy_behavior != VarDctEntropyBehavior::kRateOptimized)
+    return Status::InvalidArgument("Entropy override must be balanced or rate-optimized");
+  if (options.coefficient_order_behavior &&
+      *options.coefficient_order_behavior != VarDctCoefficientOrderBehavior::kFull &&
+      *options.coefficient_order_behavior != VarDctCoefficientOrderBehavior::kEffort7Dct8Sampled)
+    return Status::InvalidArgument("Invalid coefficient-order override");
   if (options.cpu_thread_count > kMaximumCpuThreadCount) {
     return Status::InvalidArgument("VarDCT CPU thread count must be zero or at most 256");
   }
@@ -2045,6 +2061,8 @@ Status EncodeResidentLinearRgbVarDctCodestreamOwned(ResidentEncodingInput input,
 bool ShouldComputeQuantizationMatrixScaleStats(
   const VarDctEncodingOptions& options) noexcept {
 
+  if (options.adaptive_quantization_matrices.has_value())
+    return *options.adaptive_quantization_matrices;
   return options.rate_control_mode != VarDctRateControlMode::kMaximumError &&
     (options.effort >= 7 ||
      options.density_mode == VarDctDensityMode::kHighDensity);
@@ -2053,6 +2071,7 @@ bool ShouldComputeQuantizationMatrixScaleStats(
 VarDctEntropyBehavior ResolveEntropyBehavior(
   const VarDctEncodingOptions& options) noexcept {
 
+  if (options.entropy_behavior.has_value()) return *options.entropy_behavior;
   if (options.compression_mode ==
       VarDctCompressionMode::kMaximumCompression) {
     return VarDctEntropyBehavior::kMaximumCompression;
@@ -2067,6 +2086,7 @@ VarDctEntropyBehavior ResolveEntropyBehavior(
 VarDctCoefficientOrderBehavior ResolveCoefficientOrderBehavior(
   const VarDctEncodingOptions& options) noexcept {
 
+  if (options.coefficient_order_behavior.has_value()) return *options.coefficient_order_behavior;
   return options.effort == 7 &&
       options.density_mode == VarDctDensityMode::kDefault &&
       options.compression_mode == VarDctCompressionMode::kAutomatic
