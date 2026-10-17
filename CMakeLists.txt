@@ -487,6 +487,11 @@ target_link_libraries(
     gjxl_pfm_io
 )
 
+# In-process RGB8 tile evaluation through the versioned public C API.
+find_package(Threads REQUIRED)
+add_executable(gjxl_tiles tools/gjxl_tiles.cpp)
+target_link_libraries(gjxl_tiles PRIVATE gjxl_c Threads::Threads)
+
 add_executable(
   gjxl_rate_control_probe
   tools/rate_control_probe.cpp
