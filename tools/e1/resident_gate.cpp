@@ -24,6 +24,11 @@
 #include <thread>
 #include <vector>
 
+#ifdef GJXL_E3_GATE
+#include <malloc.h>
+#include "core/resource_context.h"
+#endif
+
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr size_t kBytes = 512 * 512 * 3;
@@ -121,6 +126,9 @@ struct Encoder {
 GJXLEncoderOptions Options(int preset) {
   GJXLEncoderOptions o; Check(gjxl_encoder_options_init(&o, sizeof(o)));
   o.distance = 1.2f; o.effort = preset == 7 ? 7 : 8;
+#ifdef GJXL_E3_GATE
+  if (preset == 7) o.aq_updates = 3;
+#endif
   if (preset == 0) o.entropy_behavior = GJXL_ENTROPY_BALANCED;
   return o;
 }
@@ -272,7 +280,7 @@ void Invalid(Encoder& encoder) {
   std::cout << "{\"invalid_arguments\":true,\"tiny_cap_rejected\":true}" << std::endl;
 }
 void Measure(Encoder& encoder, const std::vector<Tile>& tiles, size_t reps,
-             bool leak, bool trace) {
+             bool leak, bool trace, bool heap = false) {
   const size_t before_input = Vram();
   DeviceTiles device(tiles, 2);
   const size_t input_backing = Vram() - before_input;
@@ -297,6 +305,22 @@ void Measure(Encoder& encoder, const std::vector<Tile>& tiles, size_t reps,
         << ",\"caller_device_bytes\":" << device.bytes << ",\"caller_device_backing_bytes\":" << input_backing
         << ",\"encoder_vram_bytes\":" << encoder_vram << "}" << std::endl;
     }
+#ifdef GJXL_E3_GATE
+    if (heap) {
+      // Sample after output destruction, with all encoder workers idle. RSS
+      // includes malloc's retained free pages; report live owners separately.
+      const auto managed = gjxl::resource_budget_internal::DefaultResourceBudget().snapshot();
+      const auto usage = mallinfo2();
+      std::cout << "{\"heap_sample\":true,\"encodes\":" << done
+        << ",\"managed_live_bytes\":" << managed.total.live_capacity_bytes
+        << ",\"managed_idle_bytes\":" << managed.total.idle_capacity_bytes
+        << ",\"malloc_live_bytes\":" << usage.uordblks + usage.hblkhd
+        << ",\"malloc_free_bytes\":" << usage.fordblks
+        << ",\"rss_bytes\":" << Rss() << "}" << std::endl;
+    }
+#else
+    (void)heap;
+#endif
   }
   if (trace) { Cuda(cudaProfilerStop()); std::cout << "{\"profile_tiles\":" << done << "}" << std::endl; }
 }
@@ -309,7 +333,7 @@ int main(int argc, char** argv) {
     Require(contexts >= 1 && contexts <= 16 && reps >= 1, "Invalid contexts/reps");
     Cuda(cudaSetDevice(0));
     std::vector<Tile> tiles;
-    int first = mode == "identity" ? 5 : 4;
+    int first = mode == "identity" || mode == "edges" ? 5 : 4;
     for (int i = first; i < argc; ++i) {
       std::vector<std::filesystem::path> files;
       if (std::filesystem::is_directory(argv[i])) {
@@ -322,7 +346,7 @@ int main(int argc, char** argv) {
         Require(bool(f.read(reinterpret_cast<char*>(t.pixels.data()), kBytes)), "Read tile failed"); tiles.push_back(std::move(t));
       }
     }
-    if (mode == "test") {
+    if (mode == "test" || mode == "edges") {
       for (auto [w, h] : {std::pair{1u, 1u}, {1u, 512u}, {512u, 1u}, {511u, 509u}, {31u, 27u}, {257u, 199u}, {512u, 512u}}) {
         Tile t; t.width = w; t.height = h; t.pixels.resize(w * h * 3);
         t.name = "edge-" + std::to_string(w) + "x" + std::to_string(h);
@@ -332,10 +356,10 @@ int main(int argc, char** argv) {
     }
     Require(!tiles.empty(), "No tiles selected");
     Encoder encoder(contexts);
-    if (mode == "test") {
-      Invalid(encoder); Identity(encoder, contexts, tiles, "", true); Concurrency(encoder, tiles); Events(encoder);
+    if (mode == "test" || mode == "edges") {
+      Invalid(encoder); Identity(encoder, contexts, tiles, mode == "edges" ? argv[4] : "", true); Concurrency(encoder, tiles); Events(encoder);
     } else if (mode == "identity") { Identity(encoder, contexts, tiles, argv[4], false); }
-    else if (mode == "bench" || mode == "leak" || mode == "trace") Measure(encoder, tiles, reps, mode == "leak", mode == "trace");
+    else if (mode == "bench" || mode == "devicebench" || mode == "leak" || mode == "heap" || mode == "trace") Measure(encoder, tiles, reps, mode == "leak" || mode == "heap" || mode == "devicebench", mode == "trace", mode == "heap");
     else throw std::runtime_error("Unknown gate mode");
     encoder.Destroy(); return 0;
   } catch (const std::exception& e) { std::cerr << "E1 gate: " << e.what() << std::endl; return 1; }
