@@ -599,25 +599,31 @@ bool RebalanceHistogram(
 Status InitializeAliasTable(
   std::span<const uint16_t> frequencies,
   size_t log_alpha_size,
-  Storage<AliasEntry>* table) {
+  std::span<AliasEntry> table) {
 
-  if (table == nullptr || log_alpha_size < 5 || log_alpha_size > 8 ||
+  if (log_alpha_size < 5 || log_alpha_size > 8 ||
+      table.size() < (size_t{1} << log_alpha_size) ||
       frequencies.size() > (size_t{1} << log_alpha_size)) {
     return Status::InvalidArgument("ANS alias-table dimensions are invalid");
   }
   const size_t table_size = size_t{1} << log_alpha_size;
   const uint32_t entry_size = kAnsTableSize >> log_alpha_size;
-  table->assign(table_size, AliasEntry{});
-  Storage<uint32_t> distribution(frequencies.begin(), frequencies.end());
-  while (!distribution.empty() && distribution.back() == 0) {
-    distribution.pop_back();
+  std::fill_n(table.begin(), table_size, AliasEntry{});
+  // These work arrays are bounded by the 256-symbol ANS alphabet. Keeping
+  // them on the stack avoids repeated managed allocations (and shared-domain
+  // accounting locks) for each candidate entropy model.
+  std::array<uint32_t, kMaximumAnsAlphabetSize> distribution{};
+  std::copy(frequencies.begin(), frequencies.end(), distribution.begin());
+  size_t distribution_size = frequencies.size();
+  while (distribution_size != 0 && distribution[distribution_size - 1] == 0) {
+    --distribution_size;
   }
-  if (distribution.empty()) {
-    distribution.push_back(kAnsTableSize);
+  if (distribution_size == 0) {
+    distribution[distribution_size++] = kAnsTableSize;
   }
   uint32_t sum = 0;
   int single_symbol = -1;
-  for (size_t symbol = 0; symbol < distribution.size(); ++symbol) {
+  for (size_t symbol = 0; symbol < distribution_size; ++symbol) {
     sum += distribution[symbol];
     if (distribution[symbol] == kAnsTableSize) {
       single_symbol = static_cast<int>(symbol);
@@ -628,7 +634,7 @@ Status InitializeAliasTable(
   }
   if (single_symbol >= 0) {
     for (size_t index = 0; index < table_size; ++index) {
-      AliasEntry& entry = (*table)[index];
+      AliasEntry& entry = table[index];
       entry.right_value = static_cast<uint8_t>(single_symbol);
       entry.offsets1 = static_cast<uint16_t>(entry_size * index);
       entry.frequency1 = kAnsTableSize;
@@ -636,41 +642,39 @@ Status InitializeAliasTable(
     return Status::Ok();
   }
 
-  Storage<uint32_t> underfull;
-  Storage<uint32_t> overfull;
-  Storage<uint32_t> cutoffs(table_size, 0);
-  for (size_t index = 0; index < distribution.size(); ++index) {
+  std::array<uint32_t, kMaximumAnsAlphabetSize> underfull, overfull;
+  std::array<uint32_t, kMaximumAnsAlphabetSize> cutoffs{};
+  size_t underfull_size = 0, overfull_size = 0;
+  for (size_t index = 0; index < distribution_size; ++index) {
     cutoffs[index] = distribution[index];
     if (cutoffs[index] < entry_size) {
-      underfull.push_back(static_cast<uint32_t>(index));
+      underfull[underfull_size++] = static_cast<uint32_t>(index);
     } else if (cutoffs[index] > entry_size) {
-      overfull.push_back(static_cast<uint32_t>(index));
+      overfull[overfull_size++] = static_cast<uint32_t>(index);
     }
   }
-  for (size_t index = distribution.size(); index < table_size; ++index) {
-    underfull.push_back(static_cast<uint32_t>(index));
+  for (size_t index = distribution_size; index < table_size; ++index) {
+    underfull[underfull_size++] = static_cast<uint32_t>(index);
   }
-  while (!overfull.empty()) {
-    const uint32_t overfull_index = overfull.back();
-    overfull.pop_back();
-    if (underfull.empty()) {
+  while (overfull_size != 0) {
+    const uint32_t overfull_index = overfull[--overfull_size];
+    if (underfull_size == 0) {
       return Status::Internal("ANS alias table is unbalanced");
     }
-    const uint32_t underfull_index = underfull.back();
-    underfull.pop_back();
+    const uint32_t underfull_index = underfull[--underfull_size];
     const uint32_t missing = entry_size - cutoffs[underfull_index];
     cutoffs[overfull_index] -= missing;
-    AliasEntry& entry = (*table)[underfull_index];
+    AliasEntry& entry = table[underfull_index];
     entry.right_value = static_cast<uint8_t>(overfull_index);
     entry.offsets1 = static_cast<uint16_t>(cutoffs[overfull_index]);
     if (cutoffs[overfull_index] < entry_size) {
-      underfull.push_back(overfull_index);
+      underfull[underfull_size++] = overfull_index;
     } else if (cutoffs[overfull_index] > entry_size) {
-      overfull.push_back(overfull_index);
+      overfull[overfull_size++] = overfull_index;
     }
   }
   for (size_t index = 0; index < table_size; ++index) {
-    AliasEntry& entry = (*table)[index];
+    AliasEntry& entry = table[index];
     if (cutoffs[index] == entry_size) {
       entry.right_value = static_cast<uint8_t>(index);
       entry.offsets1 = 0;
@@ -680,10 +684,10 @@ Status InitializeAliasTable(
         entry.offsets1 - cutoffs[index]);
       entry.cutoff = static_cast<uint16_t>(cutoffs[index]);
     }
-    entry.frequency0 = index < distribution.size()
+    entry.frequency0 = index < distribution_size
       ? static_cast<uint16_t>(distribution[index])
       : 0;
-    entry.frequency1 = entry.right_value < distribution.size()
+    entry.frequency1 = entry.right_value < distribution_size
       ? static_cast<uint16_t>(distribution[entry.right_value])
       : 0;
   }
@@ -715,9 +719,9 @@ Status BuildAnsEncoderTables(
   }
   Storage<uint16_t> candidate_reverse_map(total);
   if (!frequencies.empty()) {
-    Storage<AliasEntry> table;
+    std::array<AliasEntry, kMaximumAnsAlphabetSize> table;
     if (Status status = InitializeAliasTable(
-          frequencies, log_alpha_size, &table);
+          frequencies, log_alpha_size, table);
         !status.ok()) {
       return status;
     }
@@ -3478,11 +3482,8 @@ Status codestream_internal::ComputeAnsOptimizationStoragePlan(
       // arrays. Bounded sorting/rebalancing scratch and bit counters are on the
       // stack; full model writing remains serial.
       !work.AddVector<uint16_t>(kMaximumAnsAlphabetSize, kFreshExact, 2 * cluster_workers) ||
-      // One reverse-map construction: alias table, distribution, cutoffs and
-      // two push/pop stacks. Each active index occurs in at most one stack.
-      !work.AddVector<AliasEntry>(kMaximumAnsAlphabetSize, kFreshExact) ||
-      !work.AddVector<uint32_t>(kMaximumAnsAlphabetSize, kFreshExact, 2) ||
-      !work.AddVector<uint32_t>(kMaximumAnsAlphabetSize, kGrowing, 2) ||
+      // Reverse-map construction uses bounded stack arrays for its alias
+      // table, distribution, cutoffs and two push/pop stacks.
       !work.Add(model.write_scratch))
     return overflow();
   HostStorageBound writer;
