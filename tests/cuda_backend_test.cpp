@@ -12,10 +12,12 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include "core/ac_strategy.h"
+#include "core/e4_gpu_options.h"
 #include "core/status.h"
 #include "dct_reference.h"
 #include "gpu/backend.h"
@@ -900,9 +902,54 @@ bool CheckResidentConstants() {
   return true;
 }
 
+bool CheckBlockingWaitOwnership() {
+  unsigned int before = 0, after = 0;
+  if (cudaGetDeviceFlags(&before) != cudaSuccess) return false;
+  for (size_t arena : {size_t{0}, size_t{1 << 20}}) {
+    std::unique_ptr<gjxl::GpuBackend> backend;
+    if (!gjxl::CreateCudaBackend({.fixed_arena_bytes = arena}, &backend).ok()) return false;
+    std::unique_ptr<gjxl::DeviceBuffer> buffer;
+    if (!backend->Allocate(32, &buffer).ok()) return false;
+    if (arena != 0) {
+      std::unique_ptr<gjxl::GpuBackend> other;
+      if (!gjxl::CreateCudaBackend({.fixed_arena_bytes = arena}, &other).ok() ||
+          !CheckValidationAndOwnership(*backend, *other)) return false;
+    }
+    // Exercise event re-recording and concurrent synchronous copies on one
+    // stream; each caller owns different storage but shares the wait event.
+    std::array<bool, 4> passed{};
+    std::array<std::thread, 4> threads;
+    for (size_t i = 0; i < threads.size(); ++i) threads[i] = std::thread([&, i] {
+      std::unique_ptr<gjxl::DeviceBuffer> owned;
+      if (!backend->Allocate(sizeof(uint32_t), &owned).ok()) return;
+      for (uint32_t v = 0; v < 40; ++v) {
+        const uint32_t source = v + static_cast<uint32_t>(i) * 100;
+        uint32_t result = 0;
+        if (!backend->CopyHostToDevice(*owned, &source, sizeof(source)).ok() ||
+            !backend->CopyDeviceToHost(*owned, &result, sizeof(result)).ok() ||
+            result != source) return;
+      }
+      passed[i] = true;
+    });
+    for (auto& thread : threads) thread.join();
+    if (std::find(passed.begin(), passed.end(), false) != passed.end()) return false;
+  }
+  return cudaGetDeviceFlags(&after) == cudaSuccess && before == after;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // Fresh processes exercise process-once environment parsing without CUDA
+  // initialization or encoding. The focused E4 gate checks exact values.
+  if (argc == 2 && std::string_view(argv[1]) == "--e4-options") {
+    const auto& options = gjxl::e4_internal::Options();
+    std::cout << (int(options.dc_pipeline) | (int(options.blocking_waits) << 1) |
+                  (int(options.butteraugli_graph) << 2)) << '\n';
+    return EXIT_SUCCESS;
+  }
+  const bool sanitizer = argc == 2 && std::string_view(argv[1]) == "--sanitizer";
+  if (argc > 1 && !sanitizer) return EXIT_FAILURE;
   if (gjxl::CreateCudaBackend(
         static_cast<std::unique_ptr<gjxl::GpuBackend>*>(nullptr)).code() !=
         gjxl::StatusCode::kInvalidArgument) {
@@ -930,8 +977,11 @@ int main() {
       other == nullptr ||
       !CheckFactoryAndBuffers(*backend) ||
       !CheckTwoDimensionalCopy(*backend, *other) ||
-      !CheckKernelLaunchErrorConsumption() ||
+      // This oracle deliberately issues an invalid CUDA launch. Memcheck
+      // reports that expected API error; exercise it in ordinary/ASan runs.
+      (!sanitizer && !CheckKernelLaunchErrorConsumption()) ||
       !CheckResidentConstants() ||
+      !CheckBlockingWaitOwnership() ||
       !CheckValidationAndOwnership(*backend, *other)) {
     return EXIT_FAILURE;
   }

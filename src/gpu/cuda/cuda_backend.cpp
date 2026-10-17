@@ -23,6 +23,7 @@
 #include "gpu/buffer.h"
 #include "gpu/cuda/cuda_backend_internal.h"
 #include "gpu/cuda/cuda_kernels.h"
+#include "gpu/cuda/cuda_host_wait.h"
 #include "gpu/cuda/cuda_resource_internal.h"
 #include "gpu/ops/transform.h"
 #include "gpu/submission.h"
@@ -65,12 +66,12 @@ void FreeDeviceMemory(CudaDeviceState& state, void* pointer, size_t bytes) {
     std::lock_guard lock(state.submission_mutex);
     if (cudaFreeAsync(pointer, state.stream) == cudaSuccess) {
       // The backing ticket may be released only after the queued free.
-      (void)cudaStreamSynchronize(state.stream);
+      (void)SynchronizeCudaStream(state.stream, state.host_wait);
       return;
     }
     // cudaFree does not synchronize pool allocations. If enqueueing the free
     // fails, drain our stream before attempting synchronous cleanup.
-    (void)cudaStreamSynchronize(state.stream);
+    (void)SynchronizeCudaStream(state.stream, state.host_wait);
   }
 #endif
   (void)cudaFree(pointer);
@@ -103,7 +104,7 @@ void AcquireCachedBuffer(CudaDeviceState& state, size_t bytes, void** pointer,
     if (!resource_budget_internal::ActivateCachedResource(cached.allocation, bytes).ok()) {
       // A cache miss must not lend backing outside the admitted envelope.
       (void)FreeCompletedPoolMemory(pool, cached.pointer);
-      (void)cudaStreamSynchronize(pool.cleanup_stream);
+      (void)SynchronizeCudaStream(pool.cleanup_stream, pool.host_wait);
       cached.pointer = nullptr;
       cached.allocation.Reset();
       pool.cached_bytes -= bytes;
@@ -126,7 +127,7 @@ bool CacheCompletedBuffer(CudaDeviceState& state, void* pointer,
   // Completion is required even for direct backend callers that release an
   // input immediately after submitting work. Cached pointers may cross lanes.
   std::lock_guard lane_lock(state.submission_mutex);
-  if (cudaStreamSynchronize(state.stream) != cudaSuccess) return false;
+  if (SynchronizeCudaStream(state.stream, state.host_wait) != cudaSuccess) return false;
   auto& pool = *state.memory_pool;
   std::lock_guard pool_lock(pool.cache_mutex);
   if (generation != pool.cache_generation.load(std::memory_order_relaxed)) return false;
@@ -162,7 +163,7 @@ Status TrimPool(CudaMemoryPoolState& pool,
     if (error != cudaSuccess) break;
     released[index] = true;
   }
-  const cudaError_t completion = cudaStreamSynchronize(pool.cleanup_stream);
+  const cudaError_t completion = SynchronizeCudaStream(pool.cleanup_stream, pool.host_wait);
   if (completion != cudaSuccess)
     return CudaRuntimeStatus(completion, "Complete cached CUDA buffer release");
   for (size_t index = 0; index < pool.cached.size(); ++index) {
@@ -231,6 +232,9 @@ Status AcquireMemoryPool(int ordinal, uint64_t release_threshold_bytes,
   error = cudaStreamCreateWithFlags(&pool->cleanup_stream, cudaStreamNonBlocking);
   if (error != cudaSuccess)
     return CudaRuntimeStatus(error, "Create CUDA pool cleanup stream");
+  error = CreateCudaHostWait(&pool->host_wait);
+  if (error != cudaSuccess)
+    return CudaRuntimeStatus(error, "Create CUDA pool cleanup wait");
   // Keep reusable backing in our explicit cache, where live/idle/domain
   // ownership is known. Do not separately retain unaccounted driver free pages.
   uint64_t driver_release_threshold = 0;
@@ -304,6 +308,7 @@ CudaMemoryPoolState::~CudaMemoryPoolState() {
   if (device.status() == cudaSuccess && pool != nullptr) {
     (void)TrimPool(*this);
     (void)cudaMemPoolDestroy(pool);
+    if (host_wait != nullptr) (void)cudaEventDestroy(host_wait);
     if (cleanup_stream != nullptr) (void)cudaStreamDestroy(cleanup_stream);
   }
 #endif
@@ -417,10 +422,12 @@ CudaDeviceState::~CudaDeviceState() {
     // Buffers and submissions share this state. At its final release all
     // pooled frees have been queued; complete them before destroying the lane.
     if (memory_pool != nullptr || fixed_arena != nullptr)
-      (void)cudaStreamSynchronize(stream);
+      (void)SynchronizeCudaStream(stream, host_wait);
+    if (butteraugli_graph != nullptr) butteraugli_graph->Reset();
     for (cudaEvent_t event : idle_events)
       if (event != nullptr) (void)cudaEventDestroy(event);
     if (fixed_arena != nullptr) (void)cudaFree(fixed_arena);
+    if (host_wait != nullptr) (void)cudaEventDestroy(host_wait);
     (void)cudaStreamDestroy(stream);
   }
 }
@@ -663,7 +670,7 @@ Status CudaBackend::CopyHostToDevice(
   cudaError_t error = cudaMemcpyAsync(
     pointer, src, size_bytes, cudaMemcpyHostToDevice, state_->stream);
   if (error == cudaSuccess) {
-    error = cudaStreamSynchronize(state_->stream);
+    error = SynchronizeCudaStream(state_->stream, state_->host_wait);
     if (error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
   }
   return CudaRuntimeStatus(error, "Copy host data to CUDA buffer");
@@ -728,7 +735,7 @@ Status CudaBackend::CopyHostToDevice2D(
           pointer, dst_row_stride_bytes, src, src_row_stride_bytes,
           row_bytes, row_count, cudaMemcpyHostToDevice, state_->stream);
   if (error == cudaSuccess) {
-    error = cudaStreamSynchronize(state_->stream);
+    error = SynchronizeCudaStream(state_->stream, state_->host_wait);
     if (error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
   }
   return CudaRuntimeStatus(error, "Copy 2D host data to CUDA buffer");
@@ -774,7 +781,7 @@ Status CudaBackend::CopyHostToDeviceBatch(
   }
   const cudaError_t enqueue_error = error;
   if (enqueued) {
-    const cudaError_t completion_error = cudaStreamSynchronize(state_->stream);
+    const cudaError_t completion_error = SynchronizeCudaStream(state_->stream, state_->host_wait);
     if (completion_error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
     if (error == cudaSuccess) error = completion_error;
   }
@@ -816,7 +823,7 @@ Status CudaBackend::CopyDeviceToHost(
   cudaError_t error = cudaMemcpyAsync(
     dst, pointer, size_bytes, cudaMemcpyDeviceToHost, state_->stream);
   if (error == cudaSuccess) {
-    error = cudaStreamSynchronize(state_->stream);
+    error = SynchronizeCudaStream(state_->stream, state_->host_wait);
     if (error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
   }
   return CudaRuntimeStatus(error, "Copy CUDA buffer to host");
@@ -886,7 +893,7 @@ Status CudaBackend::CopyDeviceToHostBatch(
   }
   const cudaError_t enqueue_error = error;
   if (enqueued) {
-    const cudaError_t completion_error = cudaStreamSynchronize(state_->stream);
+    const cudaError_t completion_error = SynchronizeCudaStream(state_->stream, state_->host_wait);
     if (completion_error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
     if (error == cudaSuccess) error = completion_error;
   }
@@ -959,7 +966,7 @@ Status CudaBackend::SubmitCompute(
       return Status::ResourcePlanExceeded("Resident CUDA completion events exhausted");
   } else {
     error = cudaEventCreateWithFlags(
-      &event, profiling ? cudaEventDefault : cudaEventDisableTiming);
+      &event, CudaCompletionEventFlags(profiling));
   }
   if (error != cudaSuccess) {
     return CudaRuntimeStatus(error, "Create CUDA completion event");
@@ -1016,7 +1023,7 @@ Status CudaBackend::SubmitCompute(
     // A late launch/metadata failure can follow successfully queued kernels.
     // Drain them before the caller can destroy their input or output owners.
     if (error != cudaSuccess || !profile_status.ok())
-      (void)cudaStreamSynchronize(state_->stream);
+      (void)SynchronizeCudaStream(state_->stream, state_->host_wait);
   }
   if (!profile_status.ok()) return profile_status;
   if (error != cudaSuccess) {
@@ -1217,6 +1224,9 @@ Status CreateCudaBackend(
     auto state = std::make_shared<cuda_internal::CudaDeviceState>();
     state->ordinal = options.device_ordinal;
     state->stream = std::exchange(stream, nullptr);
+    error = cuda_internal::CreateCudaHostWait(&state->host_wait);
+    if (error != cudaSuccess)
+      return cuda_internal::CudaRuntimeStatus(error, "Create CUDA stream wait");
     state->maximum_grid_x = static_cast<size_t>(properties.maxGridSize[0]);
     state->maximum_threads_per_block =
       static_cast<size_t>(properties.maxThreadsPerBlock);
@@ -1224,10 +1234,13 @@ Status CreateCudaBackend(
       error = cudaMalloc(&state->fixed_arena, options.fixed_arena_bytes);
       if (error != cudaSuccess)
         return cuda_internal::CudaRuntimeStatus(error, "Allocate resident CUDA arena");
+      if (e4_internal::Options().butteraugli_graph)
+        state->butteraugli_graph = std::make_unique<cuda_internal::CudaReusableGraph>();
       state->fixed_arena_bytes = options.fixed_arena_bytes;
       state->free_ranges[0] = {0, options.fixed_arena_bytes};
       for (auto& event : state->idle_events) {
-        error = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        error = cudaEventCreateWithFlags(
+            &event, cuda_internal::CudaCompletionEventFlags());
         if (error != cudaSuccess)
           return cuda_internal::CudaRuntimeStatus(error, "Create resident CUDA events");
       }

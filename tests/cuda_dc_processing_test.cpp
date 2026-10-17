@@ -156,10 +156,13 @@ int main(int argc, char **argv) {
   try {
     size_t cases = 0;
     const std::vector<gjxl::Extent2D> shapes =
-        quick ? std::vector<gjxl::Extent2D>{{19, 33}, {257, 4}, {4, 257}}
+        quick ? std::vector<gjxl::Extent2D>{{1, 64}, {64, 1}, {19, 33}, {64, 64},
+                                           {65, 64}, {257, 4}, {4, 257}}
               : std::vector<gjxl::Extent2D>{{1, 1},   {1, 257},   {257, 1},
                                             {19, 33}, {256, 256}, {257, 259},
-                                            {513, 4}};
+                                            {513, 4}, {1, 64}, {64, 1},
+                                            {31, 32}, {32, 31}, {64, 64},
+                                            {65, 64}, {64, 65}};
     for (auto e : shapes)
       for (auto qp :
            std::array<gjxl::QuantizerParams, 2>{{{1024, 64}, {731, 53}}})

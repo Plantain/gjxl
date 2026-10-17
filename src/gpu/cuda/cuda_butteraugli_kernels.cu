@@ -7,6 +7,7 @@
 // BSD-style license. See third_party/libjxl/LICENSE.
 
 #include "gpu/cuda/cuda_kernel_profile.h"
+#include "gpu/cuda/cuda_reusable_graph.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -1516,21 +1517,17 @@ cudaError_t LaunchBlurAndSplit(float* input, const float* weights,
                                cudaStream_t stream) {
   constexpr unsigned int kKernelSize = Channel < 2 ? 15 : 7;
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionTiledKernel<true, kKernelSize>", ConvolutionTile<true>::Blocks(params.width, params.height), kPlaneThreads, stream}; profile_scope) {
-    ConvolutionTiledKernel<true, kKernelSize>
-        <<<ConvolutionTile<true>::Blocks(params.width, params.height),
-           kPlaneThreads, 0, stream>>>(
-            input, weights, intermediate, params.width, params.height,
+    GJXL_E4_BA_LAUNCH((ConvolutionTiledKernel<true, kKernelSize>), ConvolutionTile<true>::Blocks(params.width, params.height),
+           kPlaneThreads, 0, stream, input, weights, intermediate, params.width, params.height,
             params.input_stride, params.width);
   }
-  const cudaError_t error = cudaGetLastError();
+  const cudaError_t error = CudaGraphLaunchStatus();
   if (error != cudaSuccess) return error;
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionFrequencyKernel<Channel>", ConvolutionTile<false>::Blocks(params.width, params.height), kPlaneThreads, stream}; profile_scope) {
-    ConvolutionFrequencyKernel<Channel>
-        <<<ConvolutionTile<false>::Blocks(params.width, params.height),
-           kPlaneThreads, 0, stream>>>(
-            intermediate, weights, input, output, params);
+    GJXL_E4_BA_LAUNCH((ConvolutionFrequencyKernel<Channel>), ConvolutionTile<false>::Blocks(params.width, params.height),
+           kPlaneThreads, 0, stream, intermediate, weights, input, output, params);
   }
-  return cudaGetLastError();
+  return CudaGraphLaunchStatus();
 }
 
 __global__ void SuppressXKernel(float* high_x, const float* high_y,
@@ -2180,43 +2177,37 @@ cudaError_t LaunchFusedMalta(const float* reference, const float* distorted,
   if constexpr (RowPair) {
     if (params.low_frequency != 0) {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"PairedMaltaScaleResponseKernel<TileHeight, true, FlatGrid>", grid, kThreads, stream}; profile_scope) {
-        PairedMaltaScaleResponseKernel<TileHeight, true, FlatGrid>
-            <<<grid, kThreads, 0, stream>>>(reference, distorted, accumulation,
+        GJXL_E4_BA_LAUNCH((PairedMaltaScaleResponseKernel<TileHeight, true, FlatGrid>), grid, kThreads, 0, stream, reference, distorted, accumulation,
                                            params);
       }
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"PairedMaltaScaleResponseKernel<TileHeight, false, FlatGrid>", grid, kThreads, stream}; profile_scope) {
-        PairedMaltaScaleResponseKernel<TileHeight, false, FlatGrid>
-            <<<grid, kThreads, 0, stream>>>(reference, distorted, accumulation,
+        GJXL_E4_BA_LAUNCH((PairedMaltaScaleResponseKernel<TileHeight, false, FlatGrid>), grid, kThreads, 0, stream, reference, distorted, accumulation,
                                            params);
       }
     }
   } else if constexpr (ZeroAware) {
     if (params.low_frequency != 0) {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ZeroAwareMaltaScaleResponseKernel<TileHeight, true, FlatGrid>", grid, kThreads, stream}; profile_scope) {
-        ZeroAwareMaltaScaleResponseKernel<TileHeight, true, FlatGrid>
-            <<<grid, kThreads, 0, stream>>>(reference, distorted, accumulation,
+        GJXL_E4_BA_LAUNCH((ZeroAwareMaltaScaleResponseKernel<TileHeight, true, FlatGrid>), grid, kThreads, 0, stream, reference, distorted, accumulation,
                                             params);
       }
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ZeroAwareMaltaScaleResponseKernel<TileHeight, false, FlatGrid>", grid, kThreads, stream}; profile_scope) {
-        ZeroAwareMaltaScaleResponseKernel<TileHeight, false, FlatGrid>
-            <<<grid, kThreads, 0, stream>>>(reference, distorted, accumulation,
+        GJXL_E4_BA_LAUNCH((ZeroAwareMaltaScaleResponseKernel<TileHeight, false, FlatGrid>), grid, kThreads, 0, stream, reference, distorted, accumulation,
                                             params);
       }
     }
   } else if (params.low_frequency != 0) {
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MaltaScaleResponseKernel<TileHeight, true, FlatGrid>", grid, kThreads, stream}; profile_scope) {
-      MaltaScaleResponseKernel<TileHeight, true, FlatGrid>
-          <<<grid, kThreads, 0, stream>>>(reference, distorted, accumulation, params);
+      GJXL_E4_BA_LAUNCH((MaltaScaleResponseKernel<TileHeight, true, FlatGrid>), grid, kThreads, 0, stream, reference, distorted, accumulation, params);
     }
   } else {
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MaltaScaleResponseKernel<TileHeight, false, FlatGrid>", grid, kThreads, stream}; profile_scope) {
-      MaltaScaleResponseKernel<TileHeight, false, FlatGrid>
-          <<<grid, kThreads, 0, stream>>>(reference, distorted, accumulation, params);
+      GJXL_E4_BA_LAUNCH((MaltaScaleResponseKernel<TileHeight, false, FlatGrid>), grid, kThreads, 0, stream, reference, distorted, accumulation, params);
     }
   }
-  return cudaGetLastError();
+  return CudaGraphLaunchStatus();
 }
 
 constexpr unsigned int MaltaTileHeightForSize(uint32_t width, uint32_t height) {
@@ -2705,7 +2696,7 @@ __global__ void ReduceMaximumKernel(const float* input, float* output,
   return static_cast<unsigned int>((count + kPlaneThreads - 1) / kPlaneThreads);
 }
 
-[[nodiscard]] cudaError_t CheckLaunch() { return cudaGetLastError(); }
+[[nodiscard]] cudaError_t CheckLaunch() { return CudaGraphLaunchStatus(); }
 
 [[nodiscard]] cudaError_t LaunchExpand(std::array<const float*, 3> input,
                                        std::array<uint32_t, 3> input_stride,
@@ -2718,9 +2709,8 @@ __global__ void ReduceMaximumKernel(const float* input, float* output,
         plan.working_height, input_stride[channel], plan.working_width,
         plan.xborder,        plan.yborder};
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ExpandKernel", PlaneBlocks(plan.working_width, plan.working_height), kPlaneThreads, stream}; profile_scope) {
-      ExpandKernel<<<PlaneBlocks(plan.working_width, plan.working_height),
-                     kPlaneThreads, 0, stream>>>(
-          input[channel], output[channel], params);
+      GJXL_E4_BA_LAUNCH((ExpandKernel), PlaneBlocks(plan.working_width, plan.working_height),
+                     kPlaneThreads, 0, stream, input[channel], output[channel], params);
     }
     const cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
@@ -2739,9 +2729,8 @@ __global__ void ReduceMaximumKernel(const float* input, float* output,
         plan.width,      plan.height,           plan.sub_width,
         plan.sub_height, input_stride[channel], output_stride};
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"SubsampleKernel", PlaneBlocks(plan.sub_width, plan.sub_height), kPlaneThreads, stream}; profile_scope) {
-      SubsampleKernel<<<PlaneBlocks(plan.sub_width, plan.sub_height),
-                        kPlaneThreads, 0, stream>>>(
-          input[channel], output[channel], params);
+      GJXL_E4_BA_LAUNCH((SubsampleKernel), PlaneBlocks(plan.sub_width, plan.sub_height),
+                        kPlaneThreads, 0, stream, input[channel], output[channel], params);
     }
     const cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
@@ -2829,31 +2818,25 @@ template <unsigned int KernelSize, bool ReferenceHorizontal = false>
     const unsigned blocks = PlaneBlocks(width, height);
     if (CudaKernelProfileScope profile{"CpuOrderConvolutionKernel<true>",
                                        blocks, kPlaneThreads, stream}; profile) {
-      CpuOrderConvolutionKernel<KernelSize, true>
-          <<<blocks, kPlaneThreads, 0, stream>>>(
-              input, weights, intermediate, width, height, input_stride, width);
+      GJXL_E4_BA_LAUNCH((CpuOrderConvolutionKernel<KernelSize, true>), blocks, kPlaneThreads, 0, stream, input, weights, intermediate, width, height, input_stride, width);
     }
     const cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
     if (CudaKernelProfileScope profile{"CpuOrderConvolutionKernel<false>",
                                        blocks, kPlaneThreads, stream}; profile) {
-      CpuOrderConvolutionKernel<KernelSize, false>
-          <<<blocks, kPlaneThreads, 0, stream>>>(
-              intermediate, weights, output, width, height, width, output_stride);
+      GJXL_E4_BA_LAUNCH((CpuOrderConvolutionKernel<KernelSize, false>), blocks, kPlaneThreads, 0, stream, intermediate, weights, output, width, height, width, output_stride);
     }
     return CheckLaunch();
   }
   if constexpr (KernelSize == 5) {
     const unsigned int blocks = PlaneBlocks(width, height);
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MirroredConvolution5Kernel<true>", blocks, kPlaneThreads, stream}; profile_scope) {
-      MirroredConvolution5Kernel<true><<<blocks, kPlaneThreads, 0, stream>>>(
-          input, weights, intermediate, width, height, input_stride, width);
+      GJXL_E4_BA_LAUNCH((MirroredConvolution5Kernel<true>), blocks, kPlaneThreads, 0, stream, input, weights, intermediate, width, height, input_stride, width);
     }
     cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MirroredConvolution5Kernel<false>", blocks, kPlaneThreads, stream}; profile_scope) {
-      MirroredConvolution5Kernel<false><<<blocks, kPlaneThreads, 0, stream>>>(
-          intermediate, weights, output, width, height, width, output_stride);
+      GJXL_E4_BA_LAUNCH((MirroredConvolution5Kernel<false>), blocks, kPlaneThreads, 0, stream, intermediate, weights, output, width, height, width, output_stride);
     }
     return CheckLaunch();
   } else {
@@ -2863,23 +2846,17 @@ template <unsigned int KernelSize, bool ReferenceHorizontal = false>
         ConvolutionTile<false>::Blocks(width, height);
     if constexpr (ReferenceHorizontal) {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionHorizontalReferenceKernel<KernelSize>", horizontal_blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionHorizontalReferenceKernel<KernelSize>
-            <<<horizontal_blocks, kPlaneThreads, 0, stream>>>(
-                input, weights, intermediate, width, height, input_stride, width);
+        GJXL_E4_BA_LAUNCH((ConvolutionHorizontalReferenceKernel<KernelSize>), horizontal_blocks, kPlaneThreads, 0, stream, input, weights, intermediate, width, height, input_stride, width);
       }
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionTiledKernel<true, KernelSize>", horizontal_blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionTiledKernel<true, KernelSize>
-            <<<horizontal_blocks, kPlaneThreads, 0, stream>>>(
-                input, weights, intermediate, width, height, input_stride, width);
+        GJXL_E4_BA_LAUNCH((ConvolutionTiledKernel<true, KernelSize>), horizontal_blocks, kPlaneThreads, 0, stream, input, weights, intermediate, width, height, input_stride, width);
       }
     }
     cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionTiledKernel<false, KernelSize>", vertical_blocks, kPlaneThreads, stream}; profile_scope) {
-      ConvolutionTiledKernel<false, KernelSize>
-          <<<vertical_blocks, kPlaneThreads, 0, stream>>>(
-              intermediate, weights, output, width, height, width, output_stride);
+      GJXL_E4_BA_LAUNCH((ConvolutionTiledKernel<false, KernelSize>), vertical_blocks, kPlaneThreads, 0, stream, intermediate, weights, output, width, height, width, output_stride);
     }
     return CheckLaunch();
   }
@@ -2963,8 +2940,7 @@ template <unsigned int KernelSize, bool ReferenceHorizontal = false>
   if (CudaKernelProfileScope profile{
           "SuppressXKernel", PlaneBlocks(width, height), kPlaneThreads, stream};
       profile) {
-    SuppressXKernel<<<PlaneBlocks(width, height), kPlaneThreads, 0, stream>>>(
-        psycho[6], psycho[7], suppress);
+    GJXL_E4_BA_LAUNCH((SuppressXKernel), PlaneBlocks(width, height), kPlaneThreads, 0, stream, psycho[6], psycho[7], suppress);
   }
   error = CheckLaunch();
   if (error != cudaSuccess) return error;
@@ -2984,8 +2960,8 @@ template <unsigned int KernelSize, bool ReferenceHorizontal = false>
                                      PlaneBlocks(width, height), kPlaneThreads,
                                      stream};
       profile) {
-    PublishShortHighKernel<<<PlaneBlocks(width, height), kPlaneThreads, 0,
-                             stream>>>(plan.planes[kImage],
+    GJXL_E4_BA_LAUNCH((PublishShortHighKernel), PlaneBlocks(width, height), kPlaneThreads, 0,
+                             stream, plan.planes[kImage],
                                        plan.planes[kImage + 1], psycho[6],
                                        psycho[7], suppress);
   }
@@ -3067,8 +3043,7 @@ template <unsigned int KernelSize, bool ReferenceHorizontal = false>
 
   const PlaneParams suppress{width, height, psycho_stride, psycho_stride};
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"SuppressXKernel", PlaneBlocks(width, height), kPlaneThreads, stream}; profile_scope) {
-    SuppressXKernel<<<PlaneBlocks(width, height), kPlaneThreads, 0, stream>>>(
-        psycho[6], psycho[7], suppress);
+    GJXL_E4_BA_LAUNCH((SuppressXKernel), PlaneBlocks(width, height), kPlaneThreads, 0, stream, psycho[6], psycho[7], suppress);
   }
   error = CheckLaunch();
   if (error != cudaSuccess) return error;
@@ -3096,8 +3071,8 @@ template <unsigned int KernelSize, bool ReferenceHorizontal = false>
     uint32_t width, uint32_t height, cudaStream_t stream) {
   const PlaneParams params{width, height, psycho_stride, output_stride};
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MaskPrecomputeKernel", PlaneBlocks(width, height), kPlaneThreads, stream}; profile_scope) {
-    MaskPrecomputeKernel<<<PlaneBlocks(width, height), kPlaneThreads, 0,
-                           stream>>>(psycho[6], psycho[7], psycho[8], psycho[9],
+    GJXL_E4_BA_LAUNCH((MaskPrecomputeKernel), PlaneBlocks(width, height), kPlaneThreads, 0,
+                           stream, psycho[6], psycho[7], psycho[8], psycho[9],
                                      output, params);
   }
   return CheckLaunch();
@@ -3219,8 +3194,7 @@ ConstPsycho(const std::array<T, kCudaButteraugliPsychoPlaneCount>& input) {
   // null: their former slots now hold masks. The horizontal mask intermediate
   // is no longer read, so it can also hold the cropped/subscale output map.
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ErosionL2FinalKernel", PlaneBlocks(width, height), kPlaneThreads, stream}; profile_scope) {
-    ErosionL2FinalKernel<<<PlaneBlocks(width, height), kPlaneThreads, 0, stream>>>(
-        difference, final);
+    GJXL_E4_BA_LAUNCH((ErosionL2FinalKernel), PlaneBlocks(width, height), kPlaneThreads, 0, stream, difference, final);
   }
   return CheckLaunch();
 }
@@ -3234,8 +3208,7 @@ ConstPsycho(const std::array<T, kCudaButteraugliPsychoPlaneCount>& input) {
     float* destination =
         output_count == 1 ? output : reduction[use_a ? 0 : 1];
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ReduceMaximumKernel", output_count, kReductionWidth, stream}; profile_scope) {
-      ReduceMaximumKernel<<<output_count, kReductionWidth, 0, stream>>>(
-          input, destination, params);
+      GJXL_E4_BA_LAUNCH((ReduceMaximumKernel), output_count, kReductionWidth, 0, stream, input, destination, params);
     }
     const cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
@@ -3256,8 +3229,7 @@ cudaError_t LaunchCudaButteraugliCompose(
   const ComposeParams params{plan.width, plan.height, plan.main_stride,
                              plan.sub_stride, plan.output_stride};
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ComposeMaximumKernel", partial_count, kReductionWidth, stream}; profile_scope) {
-    ComposeMaximumKernel<<<partial_count, kReductionWidth, 0, stream>>>(
-        plan.main_map, plan.sub_map, plan.output, partial, params);
+    GJXL_E4_BA_LAUNCH((ComposeMaximumKernel), partial_count, kReductionWidth, 0, stream, plan.main_map, plan.sub_map, plan.output, partial, params);
   }
   const cudaError_t error = CheckLaunch();
   if (error != cudaSuccess || partial_count == 1) return error;
@@ -3282,9 +3254,7 @@ cudaError_t LaunchOpsinImpl(const CudaButteraugliOpsinPlan& plan,
           plan.output_stride, plan.width, plan.height, stream, plan.cpu_order);
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MirroredConvolution5Kernel<true>", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-        MirroredConvolution5Kernel<true>
-            <<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-                plan.input[channel], plan.weights, plan.intermediate[channel],
+        GJXL_E4_BA_LAUNCH((MirroredConvolution5Kernel<true>), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, plan.input[channel], plan.weights, plan.intermediate[channel],
                 plan.width, plan.height, plan.input_stride[channel], plan.width);
       }
       error = CheckLaunch();
@@ -3296,8 +3266,7 @@ cudaError_t LaunchOpsinImpl(const CudaButteraugliOpsinPlan& plan,
         {plan.input_stride[0], plan.input_stride[1], plan.input_stride[2]},
         plan.output_stride, plan.output_stride, plan.intensity_target};
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"OpsinKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      OpsinKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-          plan.input[0], plan.input[1], plan.input[2],
+      GJXL_E4_BA_LAUNCH((OpsinKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2],
           plan.blurred[0], plan.blurred[1], plan.blurred[2],
           plan.output[0], plan.output[1], plan.output[2], params);
     }
@@ -3319,7 +3288,7 @@ cudaError_t LaunchOpsinImpl(const CudaButteraugliOpsinPlan& plan,
     fused.output_stride = plan.output_stride;
     fused.intensity_target = plan.intensity_target;
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionOpsinKernel<kOpsinTileHeight>", blocks, kPlaneThreads, stream}; profile_scope) {
-      ConvolutionOpsinKernel<kOpsinTileHeight><<<blocks, kPlaneThreads, 0, stream>>>(fused);
+      GJXL_E4_BA_LAUNCH((ConvolutionOpsinKernel<kOpsinTileHeight>), blocks, kPlaneThreads, 0, stream, fused);
     }
   }
   return CheckLaunch();
@@ -3349,14 +3318,13 @@ cudaError_t LaunchResidentOpsinImpl(const CudaButteraugliOpsinPlan& plan,
     for (size_t channel = 0; channel < 3; ++channel)
       horizontal.output[channel] = plan.intermediate[channel];
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"JointHorizontalOpsinBlurKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      JointHorizontalOpsinBlurKernel
-          <<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(horizontal);
+      GJXL_E4_BA_LAUNCH((JointHorizontalOpsinBlurKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, horizontal);
     }
     const cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
     const unsigned blocks = ((plan.width + 31) / 32) * ((plan.height + 15) / 16);
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionOpsinKernel<16>", blocks, kPlaneThreads, stream}; profile_scope) {
-      ConvolutionOpsinKernel<16><<<blocks, kPlaneThreads, 0, stream>>>(fused);
+      GJXL_E4_BA_LAUNCH((ConvolutionOpsinKernel<16>), blocks, kPlaneThreads, 0, stream, fused);
     }
   } else {
     const uint64_t tiles = ((uint64_t{plan.width} + 31) / 32) *
@@ -3366,12 +3334,12 @@ cudaError_t LaunchResidentOpsinImpl(const CudaButteraugliOpsinPlan& plan,
     if (plan.height <= 8 || tiles < 256) {
       const unsigned blocks = ((plan.width + 31) / 32) * ((plan.height + 7) / 8);
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"FusedMirroredOpsinKernel<32, 8>", blocks, kPlaneThreads, stream}; profile_scope) {
-        FusedMirroredOpsinKernel<32, 8><<<blocks, kPlaneThreads, 0, stream>>>(fused);
+        GJXL_E4_BA_LAUNCH((FusedMirroredOpsinKernel<32, 8>), blocks, kPlaneThreads, 0, stream, fused);
       }
     } else {
       const unsigned blocks = static_cast<unsigned>(tiles);
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"FusedMirroredOpsinKernel<32, 16>", blocks, kPlaneThreads, stream}; profile_scope) {
-        FusedMirroredOpsinKernel<32, 16><<<blocks, kPlaneThreads, 0, stream>>>(fused);
+        GJXL_E4_BA_LAUNCH((FusedMirroredOpsinKernel<32, 16>), blocks, kPlaneThreads, 0, stream, fused);
       }
     }
   }
@@ -3405,17 +3373,13 @@ cudaError_t LaunchLowMediumImpl(const CudaButteraugliLowMediumPlan& plan,
     // Keep the prior horizontal body there and in the sequential oracle.
     if (sequential || plan.width <= 32) {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionHorizontal3Kernel<kHorizontalWidth, kHorizontalHeight>", blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionHorizontal3Kernel<kHorizontalWidth, kHorizontalHeight>
-            <<<blocks, kPlaneThreads, 0, stream>>>(
-                plan.input[0], plan.input[1], plan.input[2], plan.device_weights,
+        GJXL_E4_BA_LAUNCH((ConvolutionHorizontal3Kernel<kHorizontalWidth, kHorizontalHeight>), blocks, kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2], plan.device_weights,
                 plan.intermediate[0], plan.intermediate[1], plan.intermediate[2],
                 plan.width, plan.height, plan.input_stride);
       }
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionHorizontalPairsKernel<kHorizontalWidth, kHorizontalHeight>", blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionHorizontalPairsKernel<kHorizontalWidth, kHorizontalHeight>
-            <<<blocks, kPlaneThreads, 0, stream>>>(
-                plan.input[0], plan.input[1], plan.input[2], plan.device_weights,
+        GJXL_E4_BA_LAUNCH((ConvolutionHorizontalPairsKernel<kHorizontalWidth, kHorizontalHeight>), blocks, kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2], plan.device_weights,
                 plan.intermediate[0], plan.intermediate[1], plan.intermediate[2],
                 plan.width, plan.height, plan.input_stride);
       }
@@ -3427,8 +3391,7 @@ cudaError_t LaunchLowMediumImpl(const CudaButteraugliLowMediumPlan& plan,
       reference ? plan.blurred_stride : plan.width, plan.output_stride};
   if (reference) {
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"LowMediumKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      LowMediumKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-          plan.input[0], plan.input[1], plan.input[2],
+      GJXL_E4_BA_LAUNCH((LowMediumKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2],
           plan.blurred[0], plan.blurred[1], plan.blurred[2],
           plan.low[0], plan.low[1], plan.low[2],
           plan.medium[0], plan.medium[1], plan.medium[2], params);
@@ -3438,16 +3401,14 @@ cudaError_t LaunchLowMediumImpl(const CudaButteraugliLowMediumPlan& plan,
         ((plan.height + rolling_tile_height - 1) / rolling_tile_height);
     if (rolling_tile_height == 96) {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionLowMediumRollingRowsKernel<96>", blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionLowMediumRollingRowsKernel<96><<<blocks, kPlaneThreads, 0, stream>>>(
-            plan.input[0], plan.input[1], plan.input[2],
+        GJXL_E4_BA_LAUNCH((ConvolutionLowMediumRollingRowsKernel<96>), blocks, kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2],
             plan.intermediate[0], plan.intermediate[1], plan.intermediate[2], plan.weights,
             plan.low[0], plan.low[1], plan.low[2],
             plan.medium[0], plan.medium[1], plan.medium[2], params);
       }
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionLowMediumRollingRowsKernel<64>", blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionLowMediumRollingRowsKernel<64><<<blocks, kPlaneThreads, 0, stream>>>(
-            plan.input[0], plan.input[1], plan.input[2],
+        GJXL_E4_BA_LAUNCH((ConvolutionLowMediumRollingRowsKernel<64>), blocks, kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2],
             plan.intermediate[0], plan.intermediate[1], plan.intermediate[2], plan.weights,
             plan.low[0], plan.low[1], plan.low[2],
             plan.medium[0], plan.medium[1], plan.medium[2], params);
@@ -3460,16 +3421,14 @@ cudaError_t LaunchLowMediumImpl(const CudaButteraugliLowMediumPlan& plan,
         ((plan.height + kLowMediumHeight - 1) / kLowMediumHeight);
     if (sequential) {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionLowMediumKernel<kLowMediumHeight>", blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionLowMediumKernel<kLowMediumHeight><<<blocks, kPlaneThreads, 0, stream>>>(
-            plan.input[0], plan.input[1], plan.input[2],
+        GJXL_E4_BA_LAUNCH((ConvolutionLowMediumKernel<kLowMediumHeight>), blocks, kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2],
             plan.intermediate[0], plan.intermediate[1], plan.intermediate[2], plan.device_weights,
             plan.low[0], plan.low[1], plan.low[2],
             plan.medium[0], plan.medium[1], plan.medium[2], params);
       }
     } else {
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ConvolutionLowMediumRowsKernel<kLowMediumHeight>", blocks, kPlaneThreads, stream}; profile_scope) {
-        ConvolutionLowMediumRowsKernel<kLowMediumHeight><<<blocks, kPlaneThreads, 0, stream>>>(
-            plan.input[0], plan.input[1], plan.input[2],
+        GJXL_E4_BA_LAUNCH((ConvolutionLowMediumRowsKernel<kLowMediumHeight>), blocks, kPlaneThreads, 0, stream, plan.input[0], plan.input[1], plan.input[2],
             plan.intermediate[0], plan.intermediate[1], plan.intermediate[2], plan.device_weights,
             plan.low[0], plan.low[1], plan.low[2],
             plan.medium[0], plan.medium[1], plan.medium[2], params);
@@ -3508,24 +3467,20 @@ cudaError_t LaunchL2FinalForTest(const CudaButteraugliL2FinalPlan& plan,
                    plan.output_stride, plan.x_multiplier};
   if (reference) {
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"L2Kernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      L2Kernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-          difference);
+      GJXL_E4_BA_LAUNCH((L2Kernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, difference);
     }
     const cudaError_t error = CheckLaunch();
     if (error != cudaSuccess) return error;
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"FinalKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      FinalKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-          final);
+      GJXL_E4_BA_LAUNCH((FinalKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, final);
     }
   } else if (erode_reference) {
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ErosionL2FinalKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      ErosionL2FinalKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-          difference, final);
+      GJXL_E4_BA_LAUNCH((ErosionL2FinalKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, difference, final);
     }
   } else {
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"L2FinalKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      L2FinalKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream>>>(
-          difference, final);
+      GJXL_E4_BA_LAUNCH((L2FinalKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0, stream, difference, final);
     }
   }
   return CheckLaunch();
@@ -3593,8 +3548,8 @@ cudaError_t LaunchCudaButteraugliErosionFinalForTesting(
   const PlaneParams params{plan.width, plan.height, plan.work_stride,
                             plan.work_stride};
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"FuzzyErosionKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-    FuzzyErosionKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0,
-                         stream>>>(plan.mask_reference, erosion_scratch, params);
+    GJXL_E4_BA_LAUNCH((FuzzyErosionKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0,
+                         stream, plan.mask_reference, erosion_scratch, params);
   }
   const cudaError_t error = CheckLaunch();
   if (error != cudaSuccess) return error;
@@ -3647,8 +3602,7 @@ cudaError_t LaunchDirectShort(const CudaButteraugliDirectShortPlan& plan,
           "DirectShortFilterKernel<TileHeight,Channel>", blocks, kPlaneThreads,
           stream};
       profile) {
-    DirectShortFilterKernel<TileHeight, Channel>
-        <<<blocks, kPlaneThreads, 0, stream>>>(plan);
+    GJXL_E4_BA_LAUNCH((DirectShortFilterKernel<TileHeight, Channel>), blocks, kPlaneThreads, 0, stream, plan);
   }
   return CheckLaunch();
 }
@@ -3731,8 +3685,8 @@ cudaError_t LaunchCudaButteraugliDirectShortReferenceForTesting(
                                      PlaneBlocks(plan.width, plan.height),
                                      kPlaneThreads, stream};
       profile) {
-    DirectShortReferenceSplitKernel<<<PlaneBlocks(plan.width, plan.height),
-                                      kPlaneThreads, 0, stream>>>(plan,
+    GJXL_E4_BA_LAUNCH((DirectShortReferenceSplitKernel), PlaneBlocks(plan.width, plan.height),
+                                      kPlaneThreads, 0, stream, plan,
                                                                   blurred);
   }
   return CheckLaunch();
@@ -3768,10 +3722,10 @@ cudaError_t LaunchCudaButteraugliBlurAndSplitReference(
   const FrequencyParams frequency{params.width, params.height, params.input_stride,
                                    blurred_stride, params.output_stride, params.channel};
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"FrequencySplitKernel", PlaneBlocks(params.width, params.height), kPlaneThreads, stream}; profile_scope) {
-    FrequencySplitKernel<<<PlaneBlocks(params.width, params.height), kPlaneThreads,
-                           0, stream>>>(input, blurred, output, frequency);
+    GJXL_E4_BA_LAUNCH((FrequencySplitKernel), PlaneBlocks(params.width, params.height), kPlaneThreads,
+                           0, stream, input, blurred, output, frequency);
   }
-  return cudaGetLastError();
+  return CudaGraphLaunchStatus();
 }
 
 cudaError_t LaunchCudaButteraugliMalta(const float* reference,
@@ -3905,8 +3859,8 @@ cudaError_t LaunchCudaButteraugliMaltaReference(
                                params.norm2_0_lt_1,
                                params.norm};
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MaltaScaleKernel", PlaneBlocks(params.width, params.height), kPlaneThreads, stream}; profile_scope) {
-    MaltaScaleKernel<<<PlaneBlocks(params.width, params.height), kPlaneThreads, 0,
-                       stream>>>(reference, distorted, scaled, scale);
+    GJXL_E4_BA_LAUNCH((MaltaScaleKernel), PlaneBlocks(params.width, params.height), kPlaneThreads, 0,
+                       stream, reference, distorted, scaled, scale);
   }
   cudaError_t error = CheckLaunch();
   if (error != cudaSuccess) return error;
@@ -3918,8 +3872,8 @@ cudaError_t LaunchCudaButteraugliMaltaReference(
       ((params.width + kMaltaTileWidth - 1) / kMaltaTileWidth) *
       ((params.height + kMaltaTileHeight - 1) / kMaltaTileHeight);
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"MaltaResponseKernel", blocks, kMaltaTileWidth * kMaltaTileHeight, stream}; profile_scope) {
-    MaltaResponseKernel<<<blocks, kMaltaTileWidth * kMaltaTileHeight, 0,
-                          stream>>>(scaled, accumulation, response);
+    GJXL_E4_BA_LAUNCH((MaltaResponseKernel), blocks, kMaltaTileWidth * kMaltaTileHeight, 0,
+                          stream, scaled, accumulation, response);
   }
   return CheckLaunch();
 }
@@ -3973,7 +3927,9 @@ cudaError_t LaunchButteraugliCompareImpl(
     const CudaButteraugliPlan& plan, std::array<const float*, 3> distorted,
     std::array<uint32_t, 3> distorted_stride, float* distance_map,
     uint32_t distance_stride, float* score,
-    const CudaAqButteraugliReduction* reduction, cudaStream_t stream) {
+    const CudaAqButteraugliReduction* reduction, cudaStream_t stream,
+    CudaReusableGraph* graph = nullptr) {
+  CudaGraphScope graph_scope(graph);
   const auto reference_main = ConstPsycho(MainPsycho(plan, 0));
   const auto distorted_main_mutable = MainPsycho(plan, 10);
   const auto distorted_main = ConstPsycho(distorted_main_mutable);
@@ -4001,8 +3957,8 @@ cudaError_t LaunchButteraugliCompareImpl(
     const CropParams crop{plan.width,      plan.height,  plan.working_width,
                           distance_stride, plan.xborder, plan.yborder};
     if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"CropKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-      CropKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0,
-                   stream>>>(plan.planes[kFinalStaging], distance_map, crop);
+      GJXL_E4_BA_LAUNCH((CropKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0,
+                   stream, plan.planes[kFinalStaging], distance_map, crop);
     }
     error = CheckLaunch();
     if (error != cudaSuccess) return error;
@@ -4036,6 +3992,9 @@ cudaError_t LaunchButteraugliCompareImpl(
           plan.working_width, nullptr, plan.planes[kFinalStaging],
           plan.working_width, plan.sub_width, plan.sub_height, stream);
       if (error != cudaSuccess) return error;
+      // End the fixed prefix before variable per-tile anchor batches.
+      error = graph_scope.Launch(stream);
+      if (error != cudaSuccess) return error;
       if (reduction != nullptr) {
         for (size_t i = 0; i < reduction->batch_count; ++i) {
           error = LaunchCudaAqComposeReduction(
@@ -4052,8 +4011,8 @@ cudaError_t LaunchButteraugliCompareImpl(
       const ComposeParams compose{plan.width, plan.height, distance_stride,
                                   plan.working_width, distance_stride};
       if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"ComposeKernel", PlaneBlocks(plan.width, plan.height), kPlaneThreads, stream}; profile_scope) {
-        ComposeKernel<<<PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0,
-                        stream>>>(distance_map, plan.planes[kFinalStaging],
+        GJXL_E4_BA_LAUNCH((ComposeKernel), PlaneBlocks(plan.width, plan.height), kPlaneThreads, 0,
+                        stream, distance_map, plan.planes[kFinalStaging],
                                   distance_map, compose);
       }
       error = CheckLaunch();
@@ -4088,9 +4047,16 @@ cudaError_t LaunchCudaButteraugliCompareAndReduce(
     const CudaButteraugliPlan& plan, std::array<const float*, 3> distorted,
     std::array<uint32_t, 3> distorted_stride, float* distance_map,
     uint32_t distance_stride, float* score,
-    const CudaAqButteraugliReduction& reduction, cudaStream_t stream) {
+    const CudaAqButteraugliReduction& reduction, cudaStream_t stream,
+    CudaReusableGraph* graph) {
+  // Only this fixed topology is cached. All pointers, strides and scalar
+  // arguments still get updated for every tile and AQ iteration.
+  if (plan.width != 512 || plan.height != 512 || plan.expanded != 0 ||
+      plan.working_width != 512 || plan.working_height != 512 ||
+      plan.sub_width != 256 || plan.sub_height != 256 || plan.multiscale != 1 ||
+      plan.cpu_order != 0 || plan.direct_short != 1) graph = nullptr;
   return LaunchButteraugliCompareImpl(plan, distorted, distorted_stride,
-      distance_map, distance_stride, score, &reduction, stream);
+      distance_map, distance_stride, score, &reduction, stream, graph);
 }
 
 }  // namespace gjxl::cuda_internal

@@ -3,6 +3,7 @@
 // CUDA implementation of the shared DC quantization/prediction/smoothing
 // policy.
 #include "gpu/cuda/cuda_kernel_profile.h"
+#include "core/e4_gpu_options.h"
 #include "gpu/cuda/cuda_dc_processing_kernels.h"
 #include <cmath>
 #include <cstdint>
@@ -35,18 +36,18 @@ __device__ __constant__ unsigned int kDcReciprocal[64] = {
 // Four waves retain every predecessor of the x+2*y traversal. Each lane owns
 // one row; north-west is the oldest dependency, three waves behind. Keeping
 // these values in shared memory avoids a device-wide barrier at every wave.
-constexpr unsigned int kDcWaveRows = 256u;
-constexpr unsigned int kDcWaveValues = 4u * kDcWaveRows;
-
+template <unsigned int Rows>
 __device__ unsigned int DcWaveIndex(unsigned int wave, unsigned int row) {
-  return (wave & 3u) * kDcWaveRows + row;
+  return (wave & 3u) * Rows + row;
 }
 
 // Store each sample's original four predictor errors and the signed error.
 // The serial predictor mutates its previous row when advancing west-to-east.
 // Recover that mutation from the current row's west/two-west samples instead,
 // making every dependency explicit for diagonal execution.
+template <unsigned int Rows>
 struct AqDcWavefrontState {
+  static constexpr unsigned int kDcWaveValues = 4u * Rows;
   unsigned int *errors;
   unsigned int width;
   int64_t predictions[4];
@@ -60,14 +61,14 @@ struct AqDcWavefrontState {
     for (unsigned int i = 0; i < 4; ++i) {
       const unsigned int *plane = errors + i * kDcWaveValues;
       const unsigned int north =
-          (y ? plane[DcWaveIndex(wave - 2u, y - 1u)] : 0u) +
-          (x ? plane[DcWaveIndex(wave - 1u, y)] : 0u);
+          (y ? plane[DcWaveIndex<Rows>(wave - 2u, y - 1u)] : 0u) +
+          (x ? plane[DcWaveIndex<Rows>(wave - 1u, y)] : 0u);
       const unsigned int northeast =
-          x + 1u < width ? (y ? plane[DcWaveIndex(wave - 1u, y - 1u)] : 0u)
+          x + 1u < width ? (y ? plane[DcWaveIndex<Rows>(wave - 1u, y - 1u)] : 0u)
                          : north;
       const unsigned int northwest =
-          x ? (y ? plane[DcWaveIndex(wave - 3u, y - 1u)] : 0u) +
-                  (x > 1u ? plane[DcWaveIndex(wave - 2u, y)] : 0u)
+          x ? (y ? plane[DcWaveIndex<Rows>(wave - 3u, y - 1u)] : 0u) +
+                  (x > 1u ? plane[DcWaveIndex<Rows>(wave - 2u, y)] : 0u)
             : north;
       const unsigned int error = north + northeast + northwest;
       const unsigned int bits = 64u - __clzll(uint64_t(error) + 1u);
@@ -85,11 +86,11 @@ struct AqDcWavefrontState {
     }
     const int *plane =
         reinterpret_cast<const int *>(errors + 4u * kDcWaveValues);
-    const int64_t ew = x ? plane[DcWaveIndex(wave - 1u, y)] : 0;
-    const int64_t en = y ? plane[DcWaveIndex(wave - 2u, y - 1u)] : 0;
-    const int64_t enw = x && y ? plane[DcWaveIndex(wave - 3u, y - 1u)] : en;
+    const int64_t ew = x ? plane[DcWaveIndex<Rows>(wave - 1u, y)] : 0;
+    const int64_t en = y ? plane[DcWaveIndex<Rows>(wave - 2u, y - 1u)] : 0;
+    const int64_t enw = x && y ? plane[DcWaveIndex<Rows>(wave - 3u, y - 1u)] : en;
     const int64_t ene =
-        y && x + 1u < width ? plane[DcWaveIndex(wave - 1u, y - 1u)] : en;
+        y && x + 1u < width ? plane[DcWaveIndex<Rows>(wave - 1u, y - 1u)] : en;
     n *= 8;
     w *= 8;
     ne *= 8;
@@ -107,7 +108,7 @@ struct AqDcWavefrontState {
   }
 
   __device__ bool Update(int value, unsigned int x, unsigned int y) {
-    const unsigned int index = DcWaveIndex(x + 2u * y, y);
+    const unsigned int index = DcWaveIndex<Rows>(x + 2u * y, y);
     const int64_t scaled = int64_t(value) * 8;
     const int64_t error = prediction - scaled;
     bool valid = error >= -2147483648ll && error <= 2147483647ll;
@@ -126,14 +127,15 @@ struct AqDcWavefrontState {
 // in the first dispatch; B runs after Y is complete in a second dispatch.
 // Weighted dependencies precede x+2*y; gradient dependencies precede x+y.
 // Every lane reaches the wave barrier, including partial-group inactive rows.
+template <unsigned int Rows = 256u, bool Pipeline = false>
 __global__ void QuantizeDcKernel(float *dc, int *quantized, unsigned int *error,
                                  CudaDcProcessingParams params,
                                  const unsigned int *resident_quantizer,
                                  unsigned int channel_base) {
   const dim3 position = blockIdx;
-  const unsigned int row_index = threadIdx.x;
+  const unsigned int row_index = Pipeline ? threadIdx.x % Rows : threadIdx.x;
   const unsigned int group = position.x;
-  const unsigned int c = channel_base + position.y;
+  const unsigned int c = Pipeline ? threadIdx.x / Rows : channel_base + position.y;
   const unsigned int groups_x = (params.width - 1u) / 256u + 1u;
   const unsigned int groups_y = (params.height - 1u) / 256u + 1u;
   if (group >= groups_x * groups_y)
@@ -163,18 +165,25 @@ __global__ void QuantizeDcKernel(float *dc, int *quantized, unsigned int *error,
   }
   const bool weighted =
       params.quantization_mode == 1u && params.predictor == 1u;
-  __shared__ unsigned int wave_errors[5u * kDcWaveValues];
-  __shared__ int wave_quantized[kDcWaveValues];
-  AqDcWavefrontState state;
+  constexpr unsigned int kDcWaveValues = 4u * Rows;
+  constexpr unsigned int kChannels = Pipeline ? 3u : 1u;
+  __shared__ unsigned int wave_errors[kChannels][5u * kDcWaveValues];
+  __shared__ int wave_quantized_storage[kChannels][kDcWaveValues];
+  int* wave_quantized = wave_quantized_storage[Pipeline ? c : 0u];
+  AqDcWavefrontState<Rows> state;
   state.width = width;
-  state.errors = wave_errors;
+  state.errors = wave_errors[Pipeline ? c : 0u];
   const unsigned int row_step = weighted ? 2u : 1u;
   const unsigned int waves = width + row_step * (height - 1u);
   {
     int *plane = quantized + c * area;
-    for (unsigned int wave = 0; wave < waves; ++wave) {
+    // B trails Y by one wave: its same-position Y coefficient was published
+    // before the preceding block barrier. The predictor's own predecessors
+    // remain exactly the original x+2*y (or x+y) traversal.
+    for (unsigned int tick = 0; tick < waves + (Pipeline ? 1u : 0u); ++tick) {
+      const unsigned int wave = tick - (Pipeline && c == 2u ? 1u : 0u);
       const int column = int(wave) - int(row_step * row_index);
-      if (row_index < height && column >= 0 &&
+      if (wave < waves && row_index < height && column >= 0 &&
           static_cast<unsigned int>(column) < width) {
         const unsigned int x = static_cast<unsigned int>(column), y = row_index;
         const unsigned int index = (gy + y) * params.width + gx + x;
@@ -189,20 +198,20 @@ __global__ void QuantizeDcKernel(float *dc, int *quantized, unsigned int *error,
         int64_t guess = 0;
         if (params.quantization_mode == 1u) {
           const int64_t w =
-              x   ? wave_quantized[DcWaveIndex(wave - 1u, y)]
-              : y ? wave_quantized[DcWaveIndex(wave - row_step, y - 1u)]
+              x   ? wave_quantized[DcWaveIndex<Rows>(wave - 1u, y)]
+              : y ? wave_quantized[DcWaveIndex<Rows>(wave - row_step, y - 1u)]
                   : 0;
           const int64_t n =
-              y ? wave_quantized[DcWaveIndex(wave - row_step, y - 1u)] : w;
+              y ? wave_quantized[DcWaveIndex<Rows>(wave - row_step, y - 1u)] : w;
           if (weighted) {
             const int64_t ne =
                 y && x + 1u < width
-                    ? wave_quantized[DcWaveIndex(wave - 1u, y - 1u)]
+                    ? wave_quantized[DcWaveIndex<Rows>(wave - 1u, y - 1u)]
                     : n;
             guess = state.Predict(x, y, n, w, ne);
           } else {
             const int64_t nw =
-                x && y ? wave_quantized[DcWaveIndex(wave - 2u, y - 1u)] : w;
+                x && y ? wave_quantized[DcWaveIndex<Rows>(wave - 2u, y - 1u)] : w;
             guess = DcClamp(n + w - nw, min(n, w), max(n, w));
           }
         }
@@ -223,7 +232,7 @@ __global__ void QuantizeDcKernel(float *dc, int *quantized, unsigned int *error,
         if (!in_range || !predictor_valid)
           atomicOr(error, 16u);
         plane[index] = q;
-        wave_quantized[DcWaveIndex(wave, y)] = q;
+        wave_quantized[DcWaveIndex<Rows>(wave, y)] = q;
         float reconstructed = __fmul_rn(float(q), steps[c]);
         if (c == 2u)
           reconstructed =
@@ -306,18 +315,29 @@ cudaError_t LaunchCudaDcQuantization(float *dc, int *quantized,
            ? !quantizer
            : (!params.global_scale || !params.quant_dc)))
     return cudaErrorInvalidValue;
+  // A satellite tile has at most 64x64 DC samples. Use one CTA for all
+  // channels, with compact rings; larger images retain the original groups.
+  if (e4_internal::Options().dc_pipeline && params.width <= 64u &&
+      params.height <= 64u) {
+    if (CudaKernelProfileScope profile_scope{"QuantizeDcPipelineKernel", 1, 192,
+                                             stream}; profile_scope) {
+      QuantizeDcKernel<64u, true><<<1, 192, 0, stream>>>(
+          dc, quantized, error, params, quantizer, 0);
+    }
+    return cudaGetLastError();
+  }
   const unsigned int groups =
       ((params.width - 1u) / 256u + 1u) * ((params.height - 1u) / 256u + 1u);
   const unsigned int threads = params.height < 256u ? params.height : 256u;
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"QuantizeDcKernel", dim3(groups, 2), threads, stream}; profile_scope) {
-    QuantizeDcKernel<<<dim3(groups, 2), threads, 0, stream>>>(
+    QuantizeDcKernel<><<<dim3(groups, 2), threads, 0, stream>>>(
         dc, quantized, error, params, quantizer, 0);
   }
   cudaError_t status = cudaGetLastError();
   if (status != cudaSuccess)
     return status;
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"QuantizeDcKernel", groups, threads, stream}; profile_scope) {
-    QuantizeDcKernel<<<groups, threads, 0, stream>>>(dc, quantized, error, params,
+    QuantizeDcKernel<><<<groups, threads, 0, stream>>>(dc, quantized, error, params,
                                                      quantizer, 2);
   }
   return cudaGetLastError();

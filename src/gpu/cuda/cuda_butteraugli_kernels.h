@@ -13,6 +13,8 @@
 
 namespace gjxl::cuda_internal {
 
+class CudaReusableGraph;
+
 // 20 psycho planes, one cached reference mask, and four reusable work planes.
 // Future high-frequency outputs also hold temporary horizontal blur values.
 inline constexpr size_t kCudaButteraugliWorkingPlaneCount = 25;
@@ -315,6 +317,7 @@ struct CudaButteraugliComposePlan {
     const CudaButteraugliPlan& plan, std::array<const float*, 3> distorted,
     std::array<uint32_t, 3> distorted_stride, float* distance_map,
     uint32_t distance_stride, float* score,
-    const CudaAqButteraugliReduction& reduction, cudaStream_t stream);
+    const CudaAqButteraugliReduction& reduction, cudaStream_t stream,
+    CudaReusableGraph* graph = nullptr);
 
 }  // namespace gjxl::cuda_internal

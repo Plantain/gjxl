@@ -17,6 +17,7 @@
 #include "codestream/workflow_internal.h"
 #include "gpu/cuda/cuda_backend.h"
 #include "gpu/cuda/cuda_backend_internal.h"
+#include "gpu/cuda/cuda_host_wait.h"
 #include "gpu/cuda/cuda_rgb8_input.h"
 
 namespace gjxl::c_api_internal {
@@ -110,7 +111,8 @@ class CudaResidentEncoder final : public ResidentEncoder {
     for (auto& thread : workers_) if (thread.joinable()) thread.join();
     ScopedCudaDevice selected(device_);
     if (event_stream_ != nullptr) {
-      (void)cudaStreamSynchronize(event_stream_);
+      (void)cuda_internal::SynchronizeCudaStream(event_stream_, host_wait_);
+      if (host_wait_ != nullptr) (void)cudaEventDestroy(host_wait_);
       (void)cudaStreamDestroy(event_stream_);
     }
   }
@@ -139,6 +141,8 @@ class CudaResidentEncoder final : public ResidentEncoder {
     if (arena_bytes == 0) return Status::ResourcePlanExceeded("Resident lane cap is too small");
     cudaError_t error = cudaStreamCreateWithFlags(&event_stream_, cudaStreamNonBlocking);
     if (error != cudaSuccess) return CudaRuntimeStatus(error, "Create input-consumption stream");
+    error = cuda_internal::CreateCudaHostWait(&host_wait_);
+    if (error != cudaSuccess) return CudaRuntimeStatus(error, "Create input-consumption wait");
     lanes_.reserve(options.contexts);
     for (size_t i = 0; i < options.contexts; ++i) {
       auto lane = std::make_unique<Lane>();
@@ -155,7 +159,8 @@ class CudaResidentEncoder final : public ResidentEncoder {
       if (!status.ok()) return status;
       status = lane->backend->Allocate(kTileBytes, &lane->upload);
       if (!status.ok()) return status;
-      error = cudaEventCreateWithFlags(&lane->input_done, cudaEventDisableTiming);
+      error = cudaEventCreateWithFlags(
+          &lane->input_done, cuda_internal::CudaCompletionEventFlags());
       if (error != cudaSuccess) return CudaRuntimeStatus(error, "Create input-consumption event");
       lanes_.push_back(std::move(lane));
     }
@@ -365,6 +370,7 @@ class CudaResidentEncoder final : public ResidentEncoder {
 
   int device_ = 0;
   cudaStream_t event_stream_ = nullptr;
+  cudaEvent_t host_wait_ = nullptr;
   std::mutex event_mutex_;
   std::vector<std::unique_ptr<Lane>> lanes_;
   std::vector<std::thread> workers_;

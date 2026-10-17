@@ -22,6 +22,7 @@
 #include "gpu/backend.h"
 #include "gpu/ops/host_transfer.h"
 #include "gpu/cuda/cuda_kernels.h"
+#include "gpu/cuda/cuda_reusable_graph.h"
 #include "gpu/cuda/cuda_kernel_profile.h"
 #include "gpu/image.h"
 #include "gpu/ops/ac_strategy.h"
@@ -73,6 +74,7 @@ struct CudaMemoryPoolState {
   int ordinal = 0;
   uint64_t release_threshold_bytes = 0;
   cudaStream_t cleanup_stream = nullptr;
+  cudaEvent_t host_wait = nullptr;  // Protected by cache_mutex.
   // Exact-sized, completed allocations retain their original domain tickets.
   // Driver page rounding is outside managed backing, as on other backends.
   struct CachedBuffer {
@@ -92,6 +94,8 @@ struct CudaMemoryPoolState {
 struct CudaDeviceState {
   int ordinal = 0;
   cudaStream_t stream = nullptr;
+  cudaEvent_t host_wait = nullptr;  // Protected by submission_mutex.
+  std::unique_ptr<CudaReusableGraph> butteraugli_graph;
   size_t maximum_grid_x = 0;
   size_t maximum_threads_per_block = 0;
   std::mutex submission_mutex;
@@ -234,6 +238,11 @@ class CudaBackend final : public GpuBackend,
                           public GpuResidentInputPreparation {
  public:
   using EncodeCallback = cudaError_t (*)(CudaBackend&, const void*);
+
+  // Called only inside SubmitCompute's stream lock.
+  CudaReusableGraph* ResidentButteraugliGraph() {
+    return state_->butteraugli_graph.get();
+  }
 
   CudaBackend(std::shared_ptr<CudaDeviceState> state, std::string name,
               bool fail_submission, bool fail_completion);

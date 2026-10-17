@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "core/managed_allocator.h"
+#include "core/e4_gpu_options.h"
 #include "gpu/cuda/cuda_backend_internal.h"
 #include "gpu/cuda/cuda_butteraugli_internal.h"
 #include "gpu/cuda/cuda_storage_plan.h"
@@ -300,10 +301,13 @@ class CudaPreparedDeviceButteraugli final : public PreparedDeviceButteraugli {
           descriptor.distorted_linear_rgb.plane[channel].row_stride);
     }
     if (reduction != nullptr) {
+      CudaReusableGraph* graph = e4_internal::Options().butteraugli_graph &&
+          cuda_kernel_profile_hooks == nullptr
+        ? backend_.ResidentButteraugliGraph() : nullptr;
       return LaunchCudaButteraugliCompareAndReduce(
           plan_, distorted, distorted_stride, Pointer(descriptor.distance_map),
           static_cast<uint32_t>(descriptor.distance_map.row_stride),
-          Pointer(descriptor.score), *reduction, stream);
+          Pointer(descriptor.score), *reduction, stream, graph);
     }
     return LaunchCudaButteraugliCompare(
         plan_, distorted, distorted_stride, Pointer(descriptor.distance_map),
