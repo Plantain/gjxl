@@ -433,7 +433,10 @@ Status ResolveProductionCudaBackend(GpuBackend** out) {
       "Production CUDA backend output pointer is null");
   }
   *out = nullptr;
-  constexpr size_t kLaneCount = 2;
+  // Independent small-image callers must not serialize uploads and readbacks
+  // through a two-stream mutex bottleneck. Keep the pool bounded, and create
+  // every lane before any caller can launch work using the shared DCT tables.
+  constexpr size_t kLaneCount = 16;
   struct Cache {
     std::mutex mutex;
     std::array<std::unique_ptr<GpuBackend>, kLaneCount> backends;
