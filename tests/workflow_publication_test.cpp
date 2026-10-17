@@ -258,7 +258,9 @@ bool CheckC(const Fixture& fixture) {
   if (!Ok(budget.TryReserve(kTestEnvelope, &job))) return false;
   {
     ResourceContextScope scope({&job, ResourceClass::kPreparation});
-    if (!Ok(EncodeLinearRgbVarDctCodestream(fixture.linear.const_view(), fixture.options,
+    auto srgb_options = fixture.options;
+    srgb_options.source_is_srgb8 = true;
+    if (!Ok(EncodeLinearRgbVarDctCodestream(fixture.linear.const_view(), srgb_options,
         &expected))) return false;
   }
   job.Reset();

@@ -13,6 +13,9 @@ Status ValidateImageMetadata(const ImageMetadata &m) {
   if (m.sample_format == SampleFormat::kFloat && m.bits == 32 &&
       m.color == SourceColor::kLinearSrgb && m.xyb && !m.alpha)
     return Status::Ok();
+  if (m.sample_format == SampleFormat::kUnsigned && m.bits == 8 &&
+      m.color == SourceColor::kSrgb && m.xyb && !m.alpha)
+    return Status::Ok();
   if (m.sample_format != SampleFormat::kUnsigned || (m.bits != 8 && m.bits != 16) ||
       (m.color != SourceColor::kSrgb && m.color != SourceColor::kGraySrgb) || m.xyb)
     return Status::Unsupported("Unsupported image sample or color metadata");
@@ -25,9 +28,10 @@ Status ValidateFrameMetadata(const ImageMetadata &m, const FrameMetadata &f) {
   if (auto s = ValidateImageMetadata(m); !s.ok())
     return s;
   if (f.encoding == FrameEncoding::kModular &&
-      m.sample_format == SampleFormat::kUnsigned && f.vardct == VarDctFrameFields{})
+      m.sample_format == SampleFormat::kUnsigned && !m.xyb &&
+      f.vardct == VarDctFrameFields{})
     return Status::Ok();
-  if (f.encoding == FrameEncoding::kVarDct && m.sample_format == SampleFormat::kFloat &&
+  if (f.encoding == FrameEncoding::kVarDct && m.xyb &&
       f.vardct.x_qm_scale < 8 && f.vardct.b_qm_scale < 8)
     return Status::Ok();
   return Status::Unsupported("Unsupported frame metadata combination");

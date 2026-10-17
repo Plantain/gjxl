@@ -288,7 +288,8 @@ Status codestream_internal::ComputeSerializerHeaderStoragePlan(
   return Status::Ok();
 }
 
-Status WriteSimpleCodestreamHeader(Extent2D frame_extent, BitWriter* writer) {
+Status WriteSimpleCodestreamHeader(Extent2D frame_extent, BitWriter* writer,
+                                  bool source_is_srgb8) {
   if (writer == nullptr) {
     return Status::InvalidArgument("Codestream-header output is null");
   }
@@ -297,8 +298,13 @@ Status WriteSimpleCodestreamHeader(Extent2D frame_extent, BitWriter* writer) {
     return Status::InvalidArgument("Frame dimensions cannot be encoded");
   }
 
-  const codec_internal::ImageMetadata metadata{frame_extent,
+  codec_internal::ImageMetadata metadata{frame_extent,
       codec_internal::SampleFormat::kFloat, 32, codec_internal::SourceColor::kLinearSrgb, true, {}};
+  if (source_is_srgb8) {
+    metadata.sample_format = codec_internal::SampleFormat::kUnsigned;
+    metadata.bits = 8;
+    metadata.color = codec_internal::SourceColor::kSrgb;
+  }
   return codestream_internal::WriteImageHeader(metadata, writer);
 }
 

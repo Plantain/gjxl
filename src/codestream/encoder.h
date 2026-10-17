@@ -31,6 +31,8 @@ struct VarDctCodestreamOptions {
   VarDctDcPrediction dc_prediction = kDefaultDcPrediction;
   /// Search modular integer mappings for balanced DC entropy coding only.
   bool dc_uint_search = false;
+  /// Signal 8-bit sRGB source metadata; the encoded frame still uses XYB.
+  bool source_is_srgb8 = false;
 };
 
 /// Serializes one validated initial-profile frame as a raw JPEG XL codestream.

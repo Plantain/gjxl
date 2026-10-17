@@ -175,6 +175,9 @@ struct VarDctEncodingOptions {
   std::optional<bool> adjusted_ac_quantization;
   std::optional<bool> adaptive_quantization_matrices;
   std::optional<bool> dc_uint_search;
+  /// Packed RGB8/opaque RGBA8 adapters retain their source metadata after
+  /// conversion to linear processing pixels. Does not change quantization.
+  bool source_is_srgb8 = false;
 };
 
 /// Effort-three DC-smoothing scope, independent of the serializer intensity.

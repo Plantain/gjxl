@@ -24,7 +24,7 @@ struct SimpleBlockContextMap;
 
 /// Writes the raw marker, size, and initial-profile image metadata.
 [[nodiscard]] Status WriteSimpleCodestreamHeader(
-  Extent2D frame_extent, BitWriter* writer);
+  Extent2D frame_extent, BitWriter* writer, bool source_is_srgb8 = false);
 
 /// Writes the regular, final, one-pass VarDCT frame header.
 [[nodiscard]] Status WriteSimpleFrameHeader(

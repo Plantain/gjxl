@@ -122,8 +122,8 @@ Status WriteImageHeader(const codec_internal::ImageMetadata &metadata,
           return s;
       }
     }
-    if (auto s = temporary.WriteBits(1, 0); !s.ok())
-      return s; // no XYB
+    if (auto s = temporary.WriteBits(1, metadata.xyb ? 1 : 0); !s.ok())
+      return s;
     if (metadata.color == codec_internal::SourceColor::kSrgb) {
       if (auto s = temporary.WriteBits(1, 1); !s.ok())
         return s; // default sRGB

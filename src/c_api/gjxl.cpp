@@ -642,6 +642,11 @@ GJXLResult gjxl_encode(
     encoding_options.backend = context->backend;
     encoding_options.cpu_thread_count = context->cpu_thread_count;
     encoding_options.execution_domain = context->execution_domain;
+    // 8-bit sRGB sources declare 8-bit sRGB in the image header; wider
+    // inputs keep the float linear-sRGB declaration.
+    encoding_options.source_is_srgb8 =
+      image->pixel_format == GJXL_PIXEL_FORMAT_RGB8_SRGB ||
+      image->pixel_format == GJXL_PIXEL_FORMAT_RGBA8_SRGB;
     result = ParsePresetOptions(*options, &encoding_options);
     if (result != GJXL_OK) return result;
     gjxl::codestream_internal::WorkflowAdmission admission;

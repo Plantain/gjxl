@@ -249,7 +249,7 @@ void HeadersAndBounds() {
        {ImageMetadata{{0, 1}}, ImageMetadata{{1, 1}, static_cast<SampleFormat>(255)},
         ImageMetadata{
             {1, 1}, SampleFormat::kUnsigned, 8, static_cast<SourceColor>(255)},
-        ImageMetadata{{1, 1}, SampleFormat::kUnsigned, 8, SourceColor::kSrgb, true},
+        ImageMetadata{{1, 1}, SampleFormat::kUnsigned, 16, SourceColor::kSrgb, true},
         ImageMetadata{{1, 1},
                       SampleFormat::kUnsigned,
                       8,

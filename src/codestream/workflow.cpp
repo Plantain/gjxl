@@ -1100,6 +1100,7 @@ PrepareWorkflow(ConstImage3FView linear_rgb, VarDctEncodingOptions options,
           codestream_internal::ResolveCoefficientOrderBehavior(options),
       .dc_prediction = options.dc_prediction,
       .dc_uint_search = codestream_internal::UseDcUintSearch(options),
+      .source_is_srgb8 = options.source_is_srgb8,
   };
   const auto frame_view = encoding.completed_frame != nullptr
     ? encoding.completed_frame->view()

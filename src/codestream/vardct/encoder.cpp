@@ -1130,10 +1130,10 @@ Status PhysicalSectionSizes(
 
 Status WriteFramePrefix(
   const VarDctFrameView& frame,
-  BitWriter* writer) {
+  BitWriter* writer, bool source_is_srgb8) {
 
   Status status = WriteSimpleCodestreamHeader(
-    frame.geometry().frame(), writer);
+    frame.geometry().frame(), writer, source_is_srgb8);
   if (!status.ok()) {
     return status;
   }
@@ -1145,7 +1145,7 @@ Status MeasureCandidateSize(
   std::span<const uint64_t> common_section_bits,
   std::span<const uint64_t> ac_section_bits,
   size_t ac_group_count,
-  size_t* size) {
+  size_t* size, bool source_is_srgb8) {
 
   if (size == nullptr) {
     return Status::InvalidArgument("Codestream candidate size output is null");
@@ -1157,7 +1157,7 @@ Status MeasureCandidateSize(
     return status;
   }
   BitWriter prefix;
-  status = WriteFramePrefix(frame, &prefix);
+  status = WriteFramePrefix(frame, &prefix, source_is_srgb8);
   if (!status.ok()) {
     return status;
   }
@@ -1182,7 +1182,7 @@ Status AssembleCandidate(
   std::span<const BitWriter> ac_sections,
   size_t ac_group_count,
   codestream_internal::CodestreamBuffer* output,
-  codestream_internal::AssemblyProfile* profile) {
+  codestream_internal::AssemblyProfile* profile, bool source_is_srgb8) {
 
   if (output == nullptr) {
     return Status::InvalidArgument("Codestream candidate output is null");
@@ -1202,7 +1202,7 @@ Status AssembleCandidate(
     BitWriter writer;
     const ProfileClock::time_point frame_header_begin =
       WorkBegin(profile != nullptr);
-    status = WriteFramePrefix(frame, &writer);
+    status = WriteFramePrefix(frame, &writer, source_is_srgb8);
     if (!status.ok()) {
       return status;
     }
@@ -1597,7 +1597,8 @@ Status EncodePreparedVarDctRepresentation(
         measure_status = MeasureCandidateSize(
           frame,
           common_section_bits[candidate.block_context_candidate_index][mode],
-          ac_section_bits, candidate.streams.size(), complete_size);
+          ac_section_bits, candidate.streams.size(), complete_size,
+          options.source_is_srgb8);
         uint64_t size_work = 0;
         WorkEnd(
           measurement_work != nullptr, size_begin,
@@ -1743,7 +1744,8 @@ Status EncodePreparedVarDctRepresentation(
   status = AssembleCandidate(
     frame, common_sections, ac_sections,
     selected.streams.size(), &candidate_output,
-    profile == nullptr ? nullptr : &candidate_profile.assembly);
+    profile == nullptr ? nullptr : &candidate_profile.assembly,
+    options.source_is_srgb8);
   if (!status.ok()) {
     return status;
   }

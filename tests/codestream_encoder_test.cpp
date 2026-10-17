@@ -157,6 +157,36 @@ bool CheckCodestreamAndFrameHeaders() {
     return false;
   }
 
+  // Changing source metadata must leave every frame byte intact, including
+  // the rate-optimized serializer's measured-size/assembly agreement.
+  for (const auto extent : {gjxl::Extent2D{17, 19}, gjxl::Extent2D{513, 9}}) {
+    gjxl::VarDctEncoderFrame source;
+    if (!MakeFrame(extent.width, extent.height, {2048, 16}, {}, &source).ok())
+      return false;
+    gjxl::BitWriter linear_header, srgb_header;
+    if (!gjxl::WriteSimpleCodestreamHeader(extent, &linear_header).ok() ||
+        !gjxl::WriteSimpleCodestreamHeader(extent, &srgb_header, true).ok() ||
+        srgb_header.padded_size() >= linear_header.padded_size())
+      return false;
+    for (auto behavior : {gjxl::VarDctEntropyBehavior::kBalanced,
+                          gjxl::VarDctEntropyBehavior::kRateOptimized}) {
+      gjxl::VarDctCodestreamOptions options;
+      options.entropy_behavior = behavior;
+      std::vector<uint8_t> linear, srgb;
+      if (!gjxl::EncodeVarDctCodestream(source, options, &linear).ok())
+        return false;
+      options.source_is_srgb8 = true;
+      if (!gjxl::EncodeVarDctCodestream(source, options, &srgb).ok() ||
+          !std::ranges::equal(std::span(srgb).first(srgb_header.padded_size()),
+                              srgb_header.padded_bytes()) ||
+          !std::ranges::equal(std::span(linear).subspan(linear_header.padded_size()),
+                              std::span(srgb).subspan(srgb_header.padded_size()))) {
+        std::cerr << "sRGB source metadata changed frame bytes\n";
+        return false;
+      }
+    }
+  }
+
   gjxl::BitWriter frame;
   if (!gjxl::WriteSimpleFrameHeader({}, &frame).ok() ||
       frame.bits_written() != 33 ||
