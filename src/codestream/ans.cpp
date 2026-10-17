@@ -2867,8 +2867,16 @@ Status OptimizeAnsEntropyCodeImpl(
         continue;
       }
       BitWriter model;
-      if (Status status = codestream_internal::PrepareEntropyContextMap(&candidate);
-          !status.ok()) return status;
+      if (width_candidates.empty()) {
+        if (Status status = codestream_internal::PrepareEntropyContextMap(&candidate);
+            !status.ok()) return status;
+      } else {
+        // Alphabet widths share the exact partition. Context-map compression
+        // depends only on that map, so retain its first encoding instead of
+        // repeating the Prefix/ANS, MTF and RLE search for every width.
+        candidate.context_map_encoding =
+          width_candidates.front().code.context_map_encoding;
+      }
       if (Status status = WriteEntropyCode(candidate, &model); !status.ok()) {
         return status;
       }
