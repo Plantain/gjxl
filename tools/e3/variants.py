@@ -21,9 +21,14 @@ TOKEN_OVERRIDES = (
 )
 
 
-def environment(enabled=(), *, unset=False):
+def environment(enabled=(), *, unset=False, blocking_waits=True, dc_pipeline=True):
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith('GJXL_E3_') and k not in TOKEN_OVERRIDES}
+           if not k.startswith(('GJXL_E3_', 'GJXL_E4_')) and k not in TOKEN_OVERRIDES}
+    # Keep E4 defaults fixed while comparing E3 settings. Explicit False for
+    # both options reproduces E4 all-off; inherited experiments cannot leak in.
+    env.update(GJXL_E4_BLOCKING_WAITS='1' if blocking_waits else '0',
+               GJXL_E4_DC_PIPELINE='1' if dc_pipeline else '0',
+               GJXL_E4_BUTTERAUGLI_GRAPH='0')
     if not unset:
         env.update({flag: '1' if name in enabled else '0'
                     for name, flag in TOGGLES.items()})

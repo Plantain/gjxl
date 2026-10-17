@@ -1,0 +1,6 @@
+# No pending clean windows. E4 is finalized after phase-4 focused qualification.
+# Claude completed all six phase-3 windows; decisions and original invocations:
+# satellite repository: codecs/jxl-gpu-hybrid/results/E4/phase3/clean-window.md
+# satellite repository: codecs/jxl-gpu-hybrid/results/E4/phase3/clean-windows.txt
+# The live bracket baseline now enables DC pipelining and blocking waits.
+# Its 70 s execution + 5 s cleanup bound remains unchanged.
