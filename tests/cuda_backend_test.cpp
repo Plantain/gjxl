@@ -854,6 +854,49 @@ bool CheckValidationAndOwnership(
     std::cerr << "CUDA completion failure injection failed\n";
     return false;
   }
+  // A readback completes earlier submissions on the same stream. Cached
+  // completion must still report per-submission failure injection, and must
+  // not declare a subsequently queued submission complete.
+  for (bool fail : {false, true}) {
+    std::array<float, 64> actual{};
+    if (!gjxl::ArmNextCudaSubmissionFailureForTest(backend, false, fail).ok() ||
+        !backend.ForwardTransform(valid, &submission).ok() || !submission ||
+        !backend.CopyDeviceToHost(*output, actual.data(), kBytes).ok() ||
+        submission->Wait().code() !=
+            (fail ? gjxl::StatusCode::kDeviceError : gjxl::StatusCode::kOk)) {
+      std::cerr << "CUDA readback completion lost submission status\n";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CheckResidentConstants() {
+  std::unique_ptr<gjxl::GpuBackend> backend;
+  if (!CheckStatus(gjxl::CreateCudaBackend({.fixed_arena_bytes = 1 << 20}, &backend),
+                   "Create resident cache backend")) return false;
+  auto* transfer = dynamic_cast<gjxl::GpuHostTransfer*>(backend.get());
+  if (!transfer) return false;
+  std::array<uint32_t, 4> data{0, 1, 0xFFFFFFFFu, 3}, actual{};
+  gjxl::DevicePlaneView first, reused, changed;
+  if (!gjxl::e3_internal::Options().resident_tables) {
+    return transfer->ResidentConstant(0, std::as_bytes(std::span(data)), &first).code() ==
+        gjxl::StatusCode::kUnavailable;
+  }
+  if (!CheckStatus(transfer->ResidentConstant(0, std::as_bytes(std::span(data)), &first),
+                   "Cache resident constant")) return false;
+  const auto allocations = backend->stats().successful_allocations;
+  if (!transfer->ResidentConstant(0, std::as_bytes(std::span(data)), &reused).ok() ||
+      reused.buffer != first.buffer ||
+      backend->stats().successful_allocations != allocations) return false;
+  data[1] = 0x12345678u;
+  if (!transfer->ResidentConstant(0, std::as_bytes(std::span(data)), &changed).ok() ||
+      !backend->CopyDeviceToHost(*changed.buffer, actual.data(), sizeof(actual)).ok() ||
+      actual != data || backend->stats().successful_allocations != allocations + 1)
+    return false;
+  if (transfer->ResidentConstant(20, std::as_bytes(std::span(data)), &reused).code() !=
+        gjxl::StatusCode::kInvalidArgument || reused.buffer != first.buffer)
+    return false;
   return true;
 }
 
@@ -888,6 +931,7 @@ int main() {
       !CheckFactoryAndBuffers(*backend) ||
       !CheckTwoDimensionalCopy(*backend, *other) ||
       !CheckKernelLaunchErrorConsumption() ||
+      !CheckResidentConstants() ||
       !CheckValidationAndOwnership(*backend, *other)) {
     return EXIT_FAILURE;
   }

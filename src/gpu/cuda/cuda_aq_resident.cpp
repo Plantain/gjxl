@@ -581,6 +581,22 @@ class CudaPreparedResidentAqEvaluation final
     if (!status.ok()) return status;
     status = AllocateArenas();
     if (!status.ok()) return status;
+    if (e3_internal::Options().resident_tables) {
+      DevicePlaneView resident_tables;
+      status = backend_->ResidentConstant(
+          14, std::as_bytes(std::span(quant_tables)), &resident_tables);
+      if (status.ok()) {
+        quant_tables_device_.buffer = resident_tables.buffer;
+        quant_tables_device_.offset_bytes = resident_tables.offset_bytes;
+        quant_tables.clear();
+      } else if (status.code() != StatusCode::kUnavailable) {
+        return status;
+      } else {
+        // Non-fixed backends use the ordinary uploads, including the
+        // evaluation-free path which skips the original-image upload.
+        status = Status::Ok();
+      }
+    }
     if (!resident_input) {
       for (size_t channel = 0; channel < 3; ++channel) {
         if (!options_.evaluation_free) {
@@ -599,7 +615,8 @@ class CudaPreparedResidentAqEvaluation final
       const CudaHostToDeviceCopy tables{
           quant_tables_device_.buffer, quant_tables.data(),
           quant_tables.size() * sizeof(float), quant_tables_device_.offset_bytes};
-      status = backend_->CopyHostToDeviceBatch(std::span(&tables, 1));
+      status = quant_tables.empty() ? Status::Ok()
+          : backend_->CopyHostToDeviceBatch(std::span(&tables, 1));
       if (!status.ok()) return status;
     } else {
       status = UploadMetadata(metadata, quant_tables);
@@ -792,8 +809,10 @@ class CudaPreparedResidentAqEvaluation final
                     "CUDA resident policy preparation returned no submission")
               : status);
     }
-    status = submission->Wait();
-    if (!status.ok()) return Invalidate(status);
+    if (!e3_internal::Options().sync_removal) {
+      status = submission->Wait();
+      if (!status.ok()) return Invalidate(status);
+    }
     uint32_t device_error = 0;
     std::array<float, 2> range{};
     const std::array<CudaDeviceToHostCopy, 2> readbacks{{
@@ -803,6 +822,8 @@ class CudaPreparedResidentAqEvaluation final
          statistics_device_.offset_bytes},
     }};
     status = backend_->CopyDeviceToHostBatch(readbacks);
+    if (status.ok() && e3_internal::Options().sync_removal)
+      status = submission->Wait();
     if (!status.ok()) return Invalidate(status);
     if (device_error != 0) {
       return Invalidate(Status::DeviceError(
@@ -1205,12 +1226,15 @@ class CudaPreparedResidentAqEvaluation final
     compact_active_ = false;
 #if defined(GJXL_CUDA_COMPACT_AC)
     compact_active_ =
+#else
+    compact_active_ = e3_internal::Options().narrow_coefficients &&
+        backend_->state_->fixed_arena != nullptr &&
+#endif
         frame_requested && coefficient_count_ >= 8 &&
         coefficient_count_ % 8 == 0 &&
         coefficient_count_ <= std::numeric_limits<uint32_t>::max() &&
         (coefficient_count_ / 4 + 255) / 256 <=
               backend_->state_->maximum_grid_x;
-#endif
     compact_flags_ = 3;
     ResetAcDecision();
     PolicyContext context{this, input, score_count,
@@ -1227,13 +1251,29 @@ class CudaPreparedResidentAqEvaluation final
                     "CUDA resident Butteraugli policy returned no submission")
               : status);
     }
-    status = submission->Wait();
-    if (!status.ok()) return Invalidate(status);
-    status = ReadAndCheckDeviceError();
-    if (!status.ok()) return Invalidate(status);
-
-    std::array<CudaDeviceToHostCopy, 5> policy_readbacks{};
+    const auto& e3 = e3_internal::Options();
+    if (!e3.sync_removal) {
+      status = submission->Wait();
+      if (!status.ok()) return Invalidate(status);
+    }
+    if (!e3.batched_readbacks) {
+      status = ReadAndCheckDeviceError();
+      if (!status.ok()) return Invalidate(status);
+    }
+    uint32_t device_error = 0;
+    QuantizerParams candidate_params;
+    std::array<CudaDeviceToHostCopy, 7> policy_readbacks{};
     size_t policy_readback_count = 0;
+    if (e3.batched_readbacks) {
+      policy_readbacks[policy_readback_count++] = {
+          error_device_.buffer, &device_error, sizeof(device_error),
+          error_device_.offset_bytes};
+      if (frame_requested) {
+        policy_readbacks[policy_readback_count++] = {
+            quantizer_device_.buffer, &candidate_params, sizeof(candidate_params),
+            quantizer_device_.offset_bytes};
+      }
+    }
     if (score_count != 0) {
       policy_readbacks[policy_readback_count++] = {
           policy_scores_device_.buffer, policy_score_readback_.data(),
@@ -1261,7 +1301,10 @@ class CudaPreparedResidentAqEvaluation final
     status = backend_->CopyDeviceToHostBatch(
         std::span<const CudaDeviceToHostCopy>(policy_readbacks).first(
           policy_readback_count));
+    if (status.ok() && e3.sync_removal) status = submission->Wait();
     if (!status.ok()) return Invalidate(status);
+    if (device_error != 0)
+      return Invalidate(Status::DeviceError("CUDA resident policy detected invalid numerics"));
 
     if (early_population) {
       status = FinishEarlyPopulationReadback();
@@ -1295,10 +1338,11 @@ class CudaPreparedResidentAqEvaluation final
 
     VarDctEncoderFrame candidate_frame;
     if (frame_requested) {
-      QuantizerParams candidate_params;
-      status = backend_->CopyDeviceToHost(
-          *quantizer_device_.buffer, &candidate_params,
-          sizeof(candidate_params), quantizer_device_.offset_bytes);
+      if (!e3.batched_readbacks) {
+        status = backend_->CopyDeviceToHost(
+            *quantizer_device_.buffer, &candidate_params,
+            sizeof(candidate_params), quantizer_device_.offset_bytes);
+      }
       Quantizer candidate_quantizer;
       if (status.ok()) {
         status = Quantizer::Create(candidate_params, &candidate_quantizer);
@@ -1306,14 +1350,18 @@ class CudaPreparedResidentAqEvaluation final
       // Copy before sparse assembly: the compact-width sparse path can reuse
       // the int32 reconstruction plane as its payload destination.
 #ifdef GJXL_CUDA_RESIDENT_TOKEN_EXPERIMENT
+      std::unique_ptr<GpuSubmission> token_copy;
       if (status.ok() && candidate_completed != nullptr &&
           retain_completed_token_coefficients) {
         status = CopyCompletedTokenCoefficients(
-            &candidate_completed->token_coefficients);
+            &candidate_completed->token_coefficients, &token_copy);
       }
 #endif
       if (status.ok())
         status = AssembleFrame(candidate_quantizer, &candidate_frame);
+#ifdef GJXL_CUDA_RESIDENT_TOKEN_EXPERIMENT
+      if (status.ok() && token_copy != nullptr) status = token_copy->Wait();
+#endif
       if (!status.ok()) return Invalidate(status);
     }
     if (reconstruction_requested) {
@@ -1600,9 +1648,13 @@ class CudaPreparedResidentAqEvaluation final
                     "CUDA resident initial quantization returned no submission")
               : status);
     }
-    status = submission->Wait();
-    if (!status.ok()) return Invalidate(status);
+    if (!e3_internal::Options().sync_removal) {
+      status = submission->Wait();
+      if (!status.ok()) return Invalidate(status);
+    }
     status = ReadAndCheckDeviceError();
+    if (status.ok() && e3_internal::Options().sync_removal)
+      status = submission->Wait();
     if (!status.ok()) return Invalidate(status);
     if (output == nullptr) {
       resident_initial_ready_ = true;
@@ -2593,7 +2645,8 @@ class CudaPreparedResidentAqEvaluation final
     return cudaMemcpyAsync(copy.destination, copy.source, copy.bytes,
                            cudaMemcpyDeviceToDevice, backend.state_->stream);
   }
-  Status CopyCompletedTokenCoefficients(std::unique_ptr<DeviceBuffer>* out) {
+  Status CopyCompletedTokenCoefficients(std::unique_ptr<DeviceBuffer>* out,
+      std::unique_ptr<GpuSubmission>* pending) {
     const resource_budget_internal::ManagedHostScope resources(
         resource_budget_internal::ResourceClass::kCompletedFrame);
     if (coefficient_count_ > std::numeric_limits<size_t>::max() / sizeof(int32_t))
@@ -2613,9 +2666,12 @@ class CudaPreparedResidentAqEvaluation final
     if (!status.ok()) return status;
     if (submission == nullptr)
       return Status::Internal("CUDA completed token copy returned no submission");
-    status = submission->Wait();
-    if (!status.ok()) return status;
+    if (!e3_internal::Options().sync_removal) {
+      status = submission->Wait();
+      if (!status.ok()) return status;
+    }
     *out = std::move(candidate);
+    if (e3_internal::Options().sync_removal) *pending = std::move(submission);
     return Status::Ok();
   }
 #endif
@@ -2740,8 +2796,10 @@ class CudaPreparedResidentAqEvaluation final
       if (!status.ok()) return status;
       if (!submission)
         return Status::Internal("CUDA sparse AC returned no submission");
-      status = submission->Wait();
-      if (!status.ok()) return status;
+      if (!e3_internal::Options().sync_removal) {
+        status = submission->Wait();
+        if (!status.ok()) return status;
+      }
 
       // Early exact populations make the payload size known before packing.
       // Metadata and values therefore need only one readback completion.
@@ -2766,6 +2824,8 @@ class CudaPreparedResidentAqEvaluation final
          ac_nonzeros_ * sizeof(T), payload.offset_bytes},
       }};
       status = backend_->CopyDeviceToHostBatch(readbacks);
+      if (status.ok() && e3_internal::Options().sync_removal)
+        status = submission->Wait();
       if (!status.ok()) return status;
       if (size_t{nonzeros} != ac_nonzeros_)
         return Status::DeviceError(

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "core/e3_transfer_options.h"
 #include "codestream/ac_tokenization_provider_internal.h"
 #include "codestream/entropy_readiness_internal.h"
 #include "codestream/workflow_internal.h"
@@ -7,6 +8,7 @@
 namespace gjxl::codestream_internal {
 inline bool UseCudaGpuTokenization(const VarDctEncodingOptions& options) {
 #if defined(GJXL_ENABLE_CUDA) && defined(GJXL_CUDA_RESIDENT_TOKEN_EXPERIMENT)
+  if (e3_internal::Options().cpu_tokens) return false;
   if (!GpuTokenizationEnabled()) return false;
   const char* value = std::getenv("GJXL_EXPERIMENT_CUDA_GPU_TOKENS");
   // Preserve explicit legacy selection, including CPU overrides. The stable

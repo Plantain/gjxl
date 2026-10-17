@@ -28,6 +28,8 @@
 #include "gpu/scratch.h"
 #include "gpu/ops/ac_strategy_storage_plan.h"
 #include "core/managed_allocator.h"
+#include "core/e3_transfer_options.h"
+#include "gpu/ops/host_transfer.h"
 #ifdef GJXL_FRONTIER_EXPERIMENT
 #include "gpu/ops/ac_strategy_capture_internal.h"
 #endif
@@ -265,6 +267,24 @@ struct StrategyResources {
   SearchDeviceBuffer device_matrices;
   SearchDeviceBuffer device_costs;
 };
+
+template <typename T>
+Status UploadSearchTable(GpuBackend& gpu, SearchDeviceBuffer& target,
+    const ManagedVector<T>& values, size_t slot) {
+  if (auto* transfer = e3_internal::Options().resident_tables
+          ? dynamic_cast<GpuHostTransfer*>(&gpu) : nullptr) {
+    DevicePlaneView resident;
+    Status status = transfer->ResidentConstant(
+        slot, std::as_bytes(std::span(values)), &resident);
+    if (status.ok()) {
+      static_cast<DevicePlaneView&>(target) = resident;
+      return status;
+    }
+    if (status.code() != StatusCode::kUnavailable) return status;
+  }
+  return gpu.CopyHostToDevice(*target.buffer, values.data(),
+                              values.size() * sizeof(T), target.offset_bytes);
+}
 
 }  // namespace
 
@@ -504,7 +524,8 @@ static Status FindAcStrategyGridGpuImpl(
     result_stats.scratch = {
       maximum_scratch_a_bytes, maximum_scratch_b_bytes, maximum_rate_bytes};
     result_stats.resource_capacity_bytes = state.resource_arena.capacity_bytes();
-    for (StrategyResources& resource : resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      StrategyResources& resource = resources[i];
       if (resource.candidates.empty()) continue;
       status = resource.device_candidates.Prepare(gpu, state.resource_arena,
           resource.candidates.size() * sizeof(AcStrategyCandidate));
@@ -517,16 +538,12 @@ static Status FindAcStrategyGridGpuImpl(
           resource.candidates.size() * sizeof(float));
       }
       if (status.ok()) {
-        status = gpu.CopyHostToDevice(*resource.device_candidates.buffer,
-          resource.candidates.data(),
-          resource.candidates.size() * sizeof(AcStrategyCandidate),
-          resource.device_candidates.offset_bytes);
+        status = UploadSearchTable(gpu, resource.device_candidates,
+                                    resource.candidates, i);
       }
       if (status.ok()) {
-        status = gpu.CopyHostToDevice(*resource.device_matrices.buffer,
-          resource.matrices.data(),
-          resource.matrices.size() * sizeof(float),
-          resource.device_matrices.offset_bytes);
+        status = UploadSearchTable(gpu, resource.device_matrices,
+                                    resource.matrices, 7 + i);
       }
       if (!status.ok()) return status;
     }
@@ -630,7 +647,15 @@ static Status FindAcStrategyGridGpuImpl(
     const auto wait_begin = profiling_session == nullptr
       ? gpu_profile_internal::GpuProfilingSession::TimePoint{}
       : gpu_profile_internal::GpuProfilingSession::BeginWallStage();
-    status = submission->Wait();
+    const auto& e3 = e3_internal::Options();
+    auto* transfer = e3.batched_readbacks || e3.sync_removal
+        ? dynamic_cast<GpuHostTransfer*>(&gpu) : nullptr;
+    const bool batched_readback =
+        e3.batched_readbacks && transfer != nullptr && device_selector == nullptr &&
+        profiling_session == nullptr;
+    const bool defer_wait = e3.sync_removal && transfer != nullptr &&
+        device_selector == nullptr && profiling_session == nullptr;
+    status = defer_wait ? Status::Ok() : submission->Wait();
     if (!status.ok()) {
       return status;
     }
@@ -706,9 +731,21 @@ static Status FindAcStrategyGridGpuImpl(
       if (stats != nullptr) *stats = result_stats;
       return Status::Ok();
     }
+    if (batched_readback) {
+      std::array<DeviceToHostCopy, 7> reads{};
+      size_t count = 0;
+      for (StrategyResources& resource : resources) {
+        if (resource.candidates.empty()) continue;
+        reads[count++] = {resource.device_costs.buffer, resource.costs.data(),
+                         resource.costs.size() * sizeof(float),
+                         resource.device_costs.offset_bytes};
+      }
+      status = transfer->CopyDeviceToHostBatch(std::span(reads).first(count));
+      if (!status.ok()) return status;
+    }
     for (StrategyResources& resource : resources) {
       if (!resource.candidates.empty()) {
-        status = gpu.CopyDeviceToHost(*resource.device_costs.buffer,
+        status = batched_readback ? Status::Ok() : gpu.CopyDeviceToHost(*resource.device_costs.buffer,
           resource.costs.data(),
           resource.costs.size() * sizeof(float),
           resource.device_costs.offset_bytes);
@@ -725,6 +762,10 @@ static Status FindAcStrategyGridGpuImpl(
                                      candidate.block_x] = resource.costs[i];
       }
       table.strategy_costs[strategy_index] = cost_storage[strategy_index];
+    }
+    if (defer_wait) {
+      status = submission->Wait();
+      if (!status.ok()) return status;
     }
     if (profiling_session != nullptr) {
       status = profiling_session->EndWallStage(

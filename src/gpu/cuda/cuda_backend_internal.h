@@ -16,8 +16,11 @@
 #include <string_view>
 
 #include "core/status.h"
+#include "core/e3_transfer_options.h"
+#include "core/managed_allocator.h"
 #include "core/resource_context.h"
 #include "gpu/backend.h"
+#include "gpu/ops/host_transfer.h"
 #include "gpu/cuda/cuda_kernels.h"
 #include "gpu/cuda/cuda_kernel_profile.h"
 #include "gpu/image.h"
@@ -31,22 +34,13 @@
 
 namespace gjxl::cuda_internal {
 
+using CudaDeviceToHostCopy = DeviceToHostCopy;
+
 struct CudaHostToDeviceCopy {
   DeviceBuffer* destination = nullptr;
   const void* source = nullptr;
   size_t size_bytes = 0;
   size_t destination_offset_bytes = 0;
-};
-
-struct CudaDeviceToHostCopy {
-  const DeviceBuffer* source = nullptr;
-  void* destination = nullptr;
-  size_t size_bytes = 0;
-  size_t source_offset_bytes = 0;
-  // size_bytes is the active byte width of each row. Zero pitches mean packed.
-  size_t row_count = 1;
-  size_t source_row_stride_bytes = 0;
-  size_t destination_row_stride_bytes = 0;
 };
 
 [[nodiscard]] Status CudaStatus(cudaError_t error, std::string_view operation,
@@ -101,6 +95,16 @@ struct CudaDeviceState {
   size_t maximum_grid_x = 0;
   size_t maximum_threads_per_block = 0;
   std::mutex submission_mutex;
+  const bool track_completion = e3_internal::Options().sync_removal;
+  uint64_t submitted_serial = 0;  // Protected by submission_mutex.
+  std::atomic<uint64_t> completed_serial{0};
+  void CompleteThrough(uint64_t serial) noexcept {
+    if (!track_completion) return;
+    uint64_t previous = completed_serial.load(std::memory_order_relaxed);
+    while (previous < serial &&
+           !completed_serial.compare_exchange_weak(previous, serial,
+               std::memory_order_release, std::memory_order_relaxed)) {}
+  }
   std::shared_ptr<CudaMemoryPoolState> memory_pool;
   void* fixed_arena = nullptr;
   size_t fixed_arena_bytes = 0;
@@ -151,6 +155,7 @@ class CudaSubmission final : public GpuSubmission {
   ~CudaSubmission() override;
 
   Status Wait() override;
+  void SetSerial(uint64_t serial) noexcept { serial_ = serial; }
 
   Status ResolveProfile(const CudaDeviceState* state,
                         std::string_view submission_id,
@@ -175,6 +180,7 @@ class CudaSubmission final : public GpuSubmission {
   std::once_flag wait_once_;
   Status completion_status_;
   bool reusable_event_ = false;
+  uint64_t serial_ = 0;
 };
 
 class CudaPreparedAqEvaluation;
@@ -215,6 +221,7 @@ Status ValidateCudaProfileRequest(gpu_profile_internal::GpuProfilingMode mode,
                                  const gpu_profile_internal::GpuExecutionProfile* profile);
 
 class CudaBackend final : public GpuBackend,
+                          public GpuHostTransfer,
                           public GpuImagePrimitives,
                           public gpu_profile_internal::GpuSubmissionProfiler,
                           public gpu_profile_internal::GpuImagePrimitivesProfiler,
@@ -246,9 +253,11 @@ class CudaBackend final : public GpuBackend,
   Status CopyHostToDeviceBatch(
       std::span<const CudaHostToDeviceCopy> copies);
   Status CopyDeviceToHostBatch(
-      std::span<const CudaDeviceToHostCopy> copies);
+      std::span<const CudaDeviceToHostCopy> copies) override;
   Status CopyDeviceToHost(const DeviceBuffer& src, void* dst, size_t size_bytes,
                           size_t src_offset_bytes) override;
+  Status ResidentConstant(size_t slot, std::span<const std::byte> contents,
+                           DevicePlaneView* view) override;
   Status ForwardTransform(const TransformBatch& batch,
                           std::unique_ptr<GpuSubmission>* submission) override;
   Status InverseTransform(const TransformBatch& batch,
@@ -414,6 +423,11 @@ class CudaBackend final : public GpuBackend,
 
   std::shared_ptr<CudaDeviceState> state_;
   std::string name_;
+  struct Constant {
+    resource_budget_internal::ManagedVector<std::byte> contents;
+    std::unique_ptr<DeviceBuffer> buffer;
+  };
+  std::array<Constant, 20> constants_;
   bool test_fail_submission_ = false;
   bool test_fail_completion_ = false;
   std::atomic<bool> fail_next_submission_{false};

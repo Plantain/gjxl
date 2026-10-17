@@ -494,7 +494,12 @@ Status CudaSubmission::Wait() {
         CudaRuntimeStatus(device.status(), "Select CUDA submission device");
       return;
     }
-    const cudaError_t error = cudaEventSynchronize(event_);
+    // A later synchronous copy on this stream also completes this event. Do
+    // not synchronize again when the readback has already proved completion.
+    const cudaError_t error = state_->track_completion && serial_ != 0 && serial_ <=
+        state_->completed_serial.load(std::memory_order_acquire)
+      ? cudaSuccess : cudaEventSynchronize(event_);
+    if (error == cudaSuccess) state_->CompleteThrough(serial_);
     if (error != cudaSuccess) {
       completion_status_ =
         CudaRuntimeStatus(error, "CUDA submission completion");
@@ -586,6 +591,32 @@ Status CudaBackend::TrimPreparationCache() {
   return state_->memory_pool == nullptr ? Status::Ok() : TrimPool(*state_->memory_pool);
 }
 
+Status CudaBackend::ResidentConstant(size_t slot,
+    std::span<const std::byte> contents, DevicePlaneView* view) {
+  if (view == nullptr || slot >= constants_.size() || contents.empty())
+    return Status::InvalidArgument("Invalid resident constant");
+  // Only the resident C API promises exclusive lane ownership. Its fixed
+  // arena charges this cache against the same hard cap as all other storage.
+  if (!e3_internal::Options().resident_tables ||
+      state_->fixed_arena == nullptr || contents.size() > 128 * 1024)
+    return Status::Unavailable("Resident constant cache is unavailable");
+  auto& cached = constants_[slot];
+  if (cached.contents.size() != contents.size() ||
+      !std::equal(contents.begin(), contents.end(), cached.contents.begin())) {
+    resource_budget_internal::ManagedVector<std::byte> copy(contents.begin(), contents.end());
+    std::unique_ptr<DeviceBuffer> buffer;
+    Status status = Allocate(contents.size(), &buffer);
+    if (!status.ok()) return status;
+    status = CopyHostToDevice(*buffer, contents.data(), contents.size(), 0);
+    if (!status.ok()) return status;
+    cached.buffer = std::move(buffer);
+    cached.contents = std::move(copy);
+  }
+  *view = {cached.buffer.get(), 0, DeviceElementType::kU8,
+            {contents.size(), 1}, contents.size()};
+  return Status::Ok();
+}
+
 CudaBuffer* CudaBackend::AsCudaBuffer(DeviceBuffer& buffer) {
   return buffer.backend() == BackendKind::kCuda
     ? dynamic_cast<CudaBuffer*>(&buffer)
@@ -633,6 +664,7 @@ Status CudaBackend::CopyHostToDevice(
     pointer, src, size_bytes, cudaMemcpyHostToDevice, state_->stream);
   if (error == cudaSuccess) {
     error = cudaStreamSynchronize(state_->stream);
+    if (error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
   }
   return CudaRuntimeStatus(error, "Copy host data to CUDA buffer");
 }
@@ -697,6 +729,7 @@ Status CudaBackend::CopyHostToDevice2D(
           row_bytes, row_count, cudaMemcpyHostToDevice, state_->stream);
   if (error == cudaSuccess) {
     error = cudaStreamSynchronize(state_->stream);
+    if (error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
   }
   return CudaRuntimeStatus(error, "Copy 2D host data to CUDA buffer");
 }
@@ -742,6 +775,7 @@ Status CudaBackend::CopyHostToDeviceBatch(
   const cudaError_t enqueue_error = error;
   if (enqueued) {
     const cudaError_t completion_error = cudaStreamSynchronize(state_->stream);
+    if (completion_error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
     if (error == cudaSuccess) error = completion_error;
   }
   return CudaRuntimeStatus(
@@ -783,6 +817,7 @@ Status CudaBackend::CopyDeviceToHost(
     dst, pointer, size_bytes, cudaMemcpyDeviceToHost, state_->stream);
   if (error == cudaSuccess) {
     error = cudaStreamSynchronize(state_->stream);
+    if (error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
   }
   return CudaRuntimeStatus(error, "Copy CUDA buffer to host");
 }
@@ -852,6 +887,7 @@ Status CudaBackend::CopyDeviceToHostBatch(
   const cudaError_t enqueue_error = error;
   if (enqueued) {
     const cudaError_t completion_error = cudaStreamSynchronize(state_->stream);
+    if (completion_error == cudaSuccess) state_->CompleteThrough(state_->submitted_serial);
     if (error == cudaSuccess) error = completion_error;
   }
   return CudaRuntimeStatus(
@@ -974,6 +1010,8 @@ Status CudaBackend::SubmitCompute(
     if (profiling) profile_status = pending->KernelProfileStatus();
     if (error == cudaSuccess && profile_status.ok()) {
       error = cudaEventRecord(event, state_->stream);
+      if (error == cudaSuccess && state_->track_completion)
+        pending->SetSerial(++state_->submitted_serial);
     }
     // A late launch/metadata failure can follow successfully queued kernels.
     // Drain them before the caller can destroy their input or output owners.

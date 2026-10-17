@@ -46,4 +46,14 @@ cudaError_t LaunchCudaAcTokenization(CudaTokenPointers p, uint32_t tasks,
                                      cudaStream_t stream);
 cudaError_t LaunchCudaAcTokenEmit(CudaTokenPointers p, uint32_t tasks,
                                   bool scalar_dct8, cudaStream_t stream);
+
+// Lossless transfer representations. transfer[0] reports value width (bits 0/1
+// mean overflow of uint8/uint16); transfer[1] counts nonzero histogram entries.
+// Remaining words are (histogram index, exact uint32 count) pairs. narrow holds
+// byte[capacity] followed by uint16[capacity], with capacity 4-aligned.
+// A null narrow pointer with capacity zero disables value narrowing; a zero
+// histogram_size independently disables histogram compaction.
+cudaError_t LaunchCudaTokenReadback(CudaTokenPointers p, uint32_t capacity,
+    uint8_t* narrow, uint32_t* transfer, uint32_t histogram_size,
+    cudaStream_t stream);
 }  // namespace gjxl::cuda_internal

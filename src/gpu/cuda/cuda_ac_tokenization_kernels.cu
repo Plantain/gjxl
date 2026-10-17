@@ -285,7 +285,51 @@ __global__ void gjxl_ac_token_emit_scalar_dct8(
   }
 }
 
+__global__ void CompactTokenReadback(CudaTokenPointers p, uint32_t capacity,
+    uint8_t* narrow, uint32_t* transfer, uint32_t histogram_size) {
+  const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  const uint32_t end = 4 + p.control[1] - 1 + 3 * 13 * p.control[1];
+  const uint32_t total = p.control[end + 2];
+  uint32_t flags = 0;
+  if (narrow != nullptr && total <= p.control[end + 1] && index < total) {
+    const uint32_t value = p.values[index];
+    narrow[index] = static_cast<uint8_t>(value);
+    reinterpret_cast<uint16_t*>(narrow + capacity)[index] =
+        static_cast<uint16_t>(value);
+    flags = (value > UINT8_MAX ? 1u : 0u) | (value > UINT16_MAX ? 2u : 0u);
+  }
+  const uint32_t overflow = __syncthreads_or(flags != 0);
+  if (overflow && flags) atomicOr(transfer, flags);
+  if (index < histogram_size) {
+    const uint32_t count = p.histogram[index];
+    const uint32_t mask = __ballot_sync(0xffffffffu, count != 0);
+    const uint32_t lane = threadIdx.x & 31;
+    uint32_t base = 0;
+    if (lane == 0) base = atomicAdd(transfer + 1, __popc(mask));
+    base = __shfl_sync(0xffffffffu, base, 0);
+    if (count) {
+      const uint32_t offset = base + __popc(mask & ((1u << lane) - 1));
+      transfer[2 + 2 * offset] = index;
+      transfer[3 + 2 * offset] = count;
+    }
+  }
+}
 }  // namespace
+
+cudaError_t LaunchCudaTokenReadback(CudaTokenPointers p, uint32_t capacity,
+    uint8_t* narrow, uint32_t* transfer, uint32_t histogram_size,
+    cudaStream_t stream) {
+  // Histograms have 128 bins per context, so every ballot is a full warp.
+  if (capacity % 4 || histogram_size % 128 || !transfer ||
+      (capacity == 0) != (narrow == nullptr) || (!capacity && !histogram_size))
+    return cudaErrorInvalidValue;
+  auto error = cudaMemsetAsync(transfer, 0, 2 * sizeof(uint32_t), stream);
+  if (error != cudaSuccess) return error;
+  const uint32_t work = capacity > histogram_size ? capacity : histogram_size;
+  CompactTokenReadback<<<work / 256 + (work % 256 != 0), 256, 0, stream>>>(
+      p, capacity, narrow, transfer, histogram_size);
+  return cudaGetLastError();
+}
 cudaError_t LaunchCudaAcTokenEmit(CudaTokenPointers p, uint32_t tasks,
                                   bool scalar, cudaStream_t stream) {
   if (!tasks) return cudaSuccess;

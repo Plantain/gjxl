@@ -243,9 +243,22 @@ class CudaPreparedDeviceButteraugli final : public PreparedDeviceButteraugli {
       if (index == 1) {
         std::copy(kernel.begin(), kernel.end(), plan_.low_medium_weights.taps);
       }
-      status = backend_.CopyHostToDevice(*kernels_[index].buffer, kernel.data(),
+      DevicePlaneView resident;
+      if (e3_internal::Options().resident_tables) {
+        status = backend_.ResidentConstant(
+            15 + index, std::as_bytes(std::span(kernel)), &resident);
+        if (status.ok()) {
+          kernels_[index].buffer = resident.buffer;
+          kernels_[index].offset_bytes = resident.offset_bytes;
+        } else if (status.code() != StatusCode::kUnavailable) {
+          return status;
+        }
+      }
+      if (resident.buffer == nullptr) {
+        status = backend_.CopyHostToDevice(*kernels_[index].buffer, kernel.data(),
                                          kernel.size() * sizeof(float),
                                          kernels_[index].offset_bytes);
+      }
       if (!status.ok()) return status;
     }
     PopulatePlan();

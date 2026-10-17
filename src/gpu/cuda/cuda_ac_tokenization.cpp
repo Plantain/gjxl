@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -186,6 +187,7 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
                       coefficients_.size_bytes() - offset_,
               "CUDA completed coefficient buffer is truncated");
       populations_ = populations;
+      compact_histograms_ = populations && e3_internal::Options().compact_histograms;
       Allocate(kAnchors, plan_.anchors.size() * sizeof(CudaTokenAnchor));
       Allocate(kGroups, plan_.groups.size() * sizeof(CudaTokenGroup));
       Allocate(kStrategies,
@@ -195,6 +197,8 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
       Allocate(kMaps, plan_.map_size);
       Allocate(kHistogram,
                populations ? plan_.context_count * 128 * sizeof(uint32_t) : 4);
+      if (compact_histograms_ || narrow_tokens_)
+        Allocate(kTransfer, 8 + (compact_histograms_ ? plan_.context_count * 128 * 8 : 0));
       Allocate(kControl, plan_.control.size() * sizeof(uint32_t));
       AllocateOutput(plan_.control[plan_.end + 1]);
       const std::array<CudaHostToDeviceCopy, 5> uploads{
@@ -233,13 +237,18 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
     const resource_budget_internal::ManagedHostScope resources(
         resource_budget_internal::ResourceClass::kSerializer);
     try {
-      Check(submission_->Wait());
-      const std::array<CudaDeviceToHostCopy, 2> count_reads{
+      if (!remove_syncs_) Check(submission_->Wait());
+      const bool compact_readback = compact_histograms_ || narrow_tokens_;
+      std::array<uint32_t, 2> transfer{3, 0};
+      const std::array<CudaDeviceToHostCopy, 3> count_reads{
           {{buffers_[kGroups].get(), plan_.groups.data(),
             plan_.groups.size() * sizeof(CudaTokenGroup), 0},
            {buffers_[kControl].get(), plan_.control.data(),
-            plan_.control.size() * sizeof(uint32_t), 0}}};
-      Check(backend_.CopyDeviceToHostBatch(count_reads));
+            plan_.control.size() * sizeof(uint32_t), 0},
+           {buffers_[kTransfer].get(), transfer.data(), sizeof(transfer), 0}}};
+      Check(backend_.CopyDeviceToHostBatch(
+          std::span(count_reads).first(compact_readback ? 3 : 2)));
+      if (remove_syncs_) Check(submission_->Wait());
       const uint32_t total = plan_.control[plan_.end + 2];
       Require(total && total <= plan_.maximum_tokens,
               "CUDA token total exceeds bound");
@@ -261,20 +270,38 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
         Check(backend_.SubmitCompute(&Emit, this, &submission_));
         Require(submission_ != nullptr,
                 "CUDA token retry returned no submission");
-        Check(submission_->Wait());
+        if (!remove_syncs_) Check(submission_->Wait());
+        if (compact_readback)
+          Check(backend_.CopyDeviceToHost(*buffers_[kTransfer], transfer.data(),
+                                         sizeof(transfer), 0));
+        if (remove_syncs_) Check(submission_->Wait());
         std::atomic_ref<uint64_t>(*retry_count_).fetch_add(1, std::memory_order_relaxed);
       }
       values_.ResetForOverwrite(total);
       contexts_.ResetForOverwrite(total);
-      histogram_.ResetForOverwrite(populations_ ? plan_.context_count * 128
-                                                : 0);
+      Require(transfer[0] == 0 || transfer[0] == 1 || transfer[0] == 3,
+              "CUDA token value width is invalid");
+      Require(transfer[1] <= (populations_ ? plan_.context_count * 128 : 0),
+              "CUDA token histogram count exceeds bound");
+      const size_t width = !narrow_tokens_ ? 4 :
+          transfer[0] == 0 ? 1 : transfer[0] == 1 ? 2 : 4;
+      histogram_.ResetForOverwrite(compact_histograms_ ? size_t(transfer[1]) * 2 :
+          populations_ ? plan_.context_count * 128 : 0);
       std::array<CudaDeviceToHostCopy, 3> reads{
-          {{buffers_[kValues].get(), values_.data(), size_t(total) * 4, 0},
+          {{buffers_[width == 4 ? kValues : kNarrow].get(), values_.data(),
+            size_t(total) * width, width == 2 ? narrow_capacity_ : 0},
            {buffers_[kContexts].get(), contexts_.data(), size_t(total) * 2, 0},
-           {buffers_[kHistogram].get(), histogram_.data(),
-            histogram_.size() * 4, 0}}};
+           {buffers_[compact_histograms_ ? kTransfer : kHistogram].get(), histogram_.data(),
+            histogram_.size() * 4, compact_histograms_ ? size_t{8} : 0}}};
       Check(backend_.CopyDeviceToHostBatch(
           std::span(reads).first(populations_ ? 3 : 2)));
+      // Expand in place backwards; no second host token array is needed.
+      for (size_t i = width == 4 ? 0 : total; i != 0; --i) {
+        const auto* source = reinterpret_cast<const uint8_t*>(values_.data());
+        uint16_t value = source[i - 1];
+        if (width == 2) std::memcpy(&value, source + 2 * (i - 1), 2);
+        values_.data()[i - 1] = value;
+      }
       Storage<EntropyTokenStreamView> candidate;
       candidate.reserve(plan_.groups.size());
       for (const auto& group : plan_.groups)
@@ -283,15 +310,32 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
             {contexts_.data() + group.output, group.tokens}));
       Storage<PreparedFixedAnsCluster> counts(populations_ ? plan_.context_count
                                                            : 0);
-      for (size_t c = 0; c < counts.size(); ++c)
-        for (uint32_t symbol = 0; symbol < 128; ++symbol) {
-          const uint64_t n = histogram_.data()[c * 128 + symbol];
+      if (compact_histograms_) {
+        for (size_t i = 0; i < transfer[1]; ++i) {
+          const uint32_t index = histogram_.data()[2 * i];
+          Require(index < counts.size() * 128, "CUDA histogram index exceeds bound");
+          const size_t c = index / 128;
+          const uint32_t symbol = index % 128;
+          const uint64_t n = histogram_.data()[2 * i + 1];
           auto& dst = counts[c];
+          Require(n != 0 && dst.counts[symbol] == 0,
+                  "CUDA histogram contains an invalid or duplicate entry");
           dst.counts[symbol] = n;
           dst.token_count += n;
-          if (n) dst.maximum_symbol = symbol;
+          dst.maximum_symbol = std::max(dst.maximum_symbol, symbol);
           if (symbol >= 16) dst.extra_bits += n * (2 + ((symbol - 16) >> 2));
         }
+      } else {
+        for (size_t c = 0; c < counts.size(); ++c)
+          for (uint32_t symbol = 0; symbol < 128; ++symbol) {
+            const uint64_t n = histogram_.data()[c * 128 + symbol];
+            auto& dst = counts[c];
+            dst.counts[symbol] = n;
+            dst.token_count += n;
+            if (n) dst.maximum_symbol = symbol;
+            if (symbol >= 16) dst.extra_bits += n * (2 + ((symbol - 16) >> 2));
+          }
+      }
       const uint32_t observed_capacity = plan_.control[plan_.end + 1];
       uint32_t previous =
           backend_.ac_token_capacity_hint_.load(std::memory_order_relaxed);
@@ -326,6 +370,8 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
     kValues,
     kContexts,
     kHistogram,
+    kTransfer,
+    kNarrow,
     kControl,
     kBufferCount
   };
@@ -337,6 +383,11 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
   void AllocateOutput(uint32_t tokens) {
     Allocate(kValues, size_t(tokens) * 4);
     Allocate(kContexts, size_t(tokens) * 2);
+    if (narrow_tokens_) {
+      Require(tokens <= UINT32_MAX - 3, "CUDA narrow token capacity exceeds bound");
+      narrow_capacity_ = (tokens + 3) & ~uint32_t{3};
+      Allocate(kNarrow, size_t(narrow_capacity_) * 3);
+    }
   }
   template <class T>
   T* Data(Slot slot) {
@@ -367,16 +418,25 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
         cudaMemsetAsync(self.Data<void>(kHistogram), 0,
                         self.buffers_[kHistogram]->size_bytes(), stream);
     if (status != cudaSuccess) return status;
-    return LaunchCudaAcTokenization(
+    status = LaunchCudaAcTokenization(
         self.Pointers(), self.plan_.tasks,
         static_cast<uint32_t>(self.plan_.groups.size()), self.plan_.scalar,
         stream);
+    return status == cudaSuccess ? self.CompactReadback(stream) : status;
   }
   static cudaError_t Emit(CudaBackend& backend, const void* opaque) {
     auto& self = *const_cast<CudaAcTokenizer*>(
         static_cast<const CudaAcTokenizer*>(opaque));
-    return LaunchCudaAcTokenEmit(self.Pointers(), self.plan_.tasks,
-                                 self.plan_.scalar, backend.state_->stream);
+    auto status = LaunchCudaAcTokenEmit(self.Pointers(), self.plan_.tasks,
+                                        self.plan_.scalar, backend.state_->stream);
+    return status == cudaSuccess ? self.CompactReadback(backend.state_->stream) : status;
+  }
+  cudaError_t CompactReadback(cudaStream_t stream) {
+    if (!compact_histograms_ && !narrow_tokens_) return cudaSuccess;
+    return LaunchCudaTokenReadback(Pointers(), narrow_capacity_,
+        narrow_tokens_ ? Data<uint8_t>(kNarrow) : nullptr,
+        Data<uint32_t>(kTransfer), compact_histograms_ ? plan_.context_count * 128 : 0,
+        stream);
   }
   CudaBackend& backend_;
   const DeviceBuffer& coefficients_;
@@ -387,6 +447,10 @@ class CudaAcTokenizer final : public AcTokenizationProvider {
   uint64_t* begin_count_ = &cuda_token_provider_begin_count;
   uint64_t* retry_count_ = &cuda_token_provider_retry_count;
   Plan plan_;
+  uint32_t narrow_capacity_ = 0;
+  const bool narrow_tokens_ = e3_internal::Options().narrow_tokens;
+  const bool remove_syncs_ = e3_internal::Options().sync_removal;
+  bool compact_histograms_ = false;
   std::array<std::unique_ptr<DeviceBuffer>, kBufferCount> buffers_;
   OverwriteArray<uint32_t> values_, histogram_;
   OverwriteArray<uint16_t> contexts_;
@@ -430,6 +494,7 @@ Status ComputeCudaTokenStoragePlan(
       ((extent.width + 31) / 32) * ((extent.height + 31) / 32);
   const size_t tokens = 195 * blocks;
   const size_t control = 9 + maps.maximum_thresholds + maps.maximum_map_entries;
+  const auto& e3 = e3_internal::Options();
   HostStorageBound device, host;
   const auto add_device = [&](size_t bytes) {
     bytes = std::max(size_t{4}, bytes);
@@ -443,6 +508,9 @@ Status ComputeCudaTokenStoragePlan(
       !add_device(3 * blocks) || !add_device(tokens * 4) ||
       !add_device(tokens * 2) ||
       !add_device(maps.maximum_ac_contexts * 128 * sizeof(uint32_t)) ||
+      ((e3.compact_histograms || e3.narrow_tokens) &&
+       !add_device(8 + (e3.compact_histograms ? maps.maximum_ac_contexts * 128 * 8 : 0))) ||
+      (e3.narrow_tokens && !add_device(((tokens + 3) & ~size_t{3}) * 3)) ||
       !add_device(control * sizeof(uint32_t)) ||
       !host.AddVector<CudaTokenAnchor>(blocks, kFreshExact) ||
       !host.AddVector<CudaTokenGroup>(groups, kFreshExact) ||
@@ -451,7 +519,8 @@ Status ComputeCudaTokenStoragePlan(
       !host.AddVector<uint32_t>(control, kFreshExact) ||
       !host.AddVector<uint32_t>(tokens, kFreshExact) ||
       !host.AddVector<uint16_t>(tokens, kFreshExact) ||
-      !host.AddVector<uint32_t>(maps.maximum_ac_contexts * 128, kFreshExact) ||
+      !host.AddVector<uint32_t>(maps.maximum_ac_contexts * 128 *
+                                  (e3.compact_histograms ? 2 : 1), kFreshExact) ||
       !host.AddVector<PreparedFixedAnsCluster>(maps.maximum_ac_contexts,
                                                kFreshExact) ||
       !host.AddVector<EntropyTokenStreamView>(groups, kFreshExact) ||
