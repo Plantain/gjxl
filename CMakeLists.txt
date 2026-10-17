@@ -3774,6 +3774,14 @@ if(GJXL_BUILD_BENCHMARKS)
   )
 
   if(GJXL_ENABLE_CUDA)
+    if(UNIX AND NOT APPLE)
+      add_executable(satellite_tile_bench tools/satellite_tile_bench.cpp)
+      target_link_libraries(satellite_tile_bench PRIVATE gjxl_c CUDA::cudart ${CMAKE_DL_LIBS})
+      add_executable(satellite_tile_profile tools/satellite_tile_profile.cpp)
+      target_include_directories(satellite_tile_profile PRIVATE benchmarks)
+      target_link_libraries(satellite_tile_profile PRIVATE gjxl_c gjxl_codestream gjxl_cuda)
+    endif()
+
     add_executable(gjxl_cuda_qualification tools/resident_qualification/driver.cpp)
     target_compile_definitions(gjxl_cuda_qualification PRIVATE
       GJXL_FINAL_SCHEDULER GJXL_CUDA_QUALIFICATION)
