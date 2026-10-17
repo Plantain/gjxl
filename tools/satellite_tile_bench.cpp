@@ -119,6 +119,8 @@ struct Options {
   size_t contexts = 8, reps = 1, warmups = 2;
   int effort = 8;
   float distance = 1.2f;
+  int32_t aq_updates = -1;
+  GJXLEntropyBehavior entropy_behavior = GJXL_ENTROPY_AUTOMATIC;
   bool profile_range = false;
   std::string output_dir;
   std::vector<std::string> paths;
@@ -140,6 +142,7 @@ Options Parse(int argc, char** argv) {
     if (arg == "--help") {
       std::cout << "satellite_tile_bench [--contexts 1..16] [--reps N] [--warmups N]\n"
                    "  [--effort 1..10] [--distance D] [--list FILE] [--output-dir DIR]\n"
+                   "  [--aq-updates 0..4] [--entropy-behavior balanced|rate-optimized]\n"
                    "  [--profile-range] tile.rgb...\n"
                    "JSON on stdout; SHA-256 per tile, repeated-output checks outside timing.\n"
                    "NVML peak sampled at context-0 tile boundaries (including warmup).\n";
@@ -156,6 +159,14 @@ Options Parse(int argc, char** argv) {
       const auto effort = Count(value);
       if (effort > 10) throw std::runtime_error("Effort must be 1..10");
       o.effort = static_cast<int>(effort);
+    } else if (arg == "--aq-updates") {
+      const auto updates = Count(value, true);
+      if (updates > 4) throw std::runtime_error("AQ updates must be 0..4");
+      o.aq_updates = static_cast<int32_t>(updates);
+    } else if (arg == "--entropy-behavior") {
+      if (value == "balanced") o.entropy_behavior = GJXL_ENTROPY_BALANCED;
+      else if (value == "rate-optimized") o.entropy_behavior = GJXL_ENTROPY_RATE_OPTIMIZED;
+      else throw std::runtime_error("Entropy behavior must be balanced or rate-optimized");
     } else if (arg == "--distance") {
       size_t end = 0;
       o.distance = std::stof(value, &end);
@@ -211,6 +222,8 @@ int Run(const Options& o) {
   Check(gjxl_encoder_options_init(&encode_options, sizeof(encode_options)));
   encode_options.effort = o.effort;
   encode_options.distance = o.distance;
+  encode_options.aq_updates = o.aq_updates;
+  encode_options.entropy_behavior = o.entropy_behavior;
   auto encode = [&](size_t context, size_t tile, Buffer& output) {
     GJXLImageView image{};
     image.struct_size = sizeof(image);
@@ -302,6 +315,8 @@ int Run(const Options& o) {
   const double seconds = std::chrono::duration<double>(end - begin).count();
   std::cout << std::setprecision(10)
       << "{\"schema\":1,\"encoder\":\"gjxl-cuda\",\"effort\":" << o.effort
+      << ",\"aq_updates\":" << o.aq_updates
+      << ",\"entropy_behavior\":" << o.entropy_behavior
       << ",\"distance\":" << o.distance << ",\"contexts\":" << o.contexts
       << ",\"warmups_per_context\":" << o.warmups << ",\"tiles\":" << tiles.size()
       << ",\"reps\":" << o.reps << ",\"encodes\":" << total
