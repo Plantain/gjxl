@@ -1623,7 +1623,7 @@ Status EncodeLinearRgbVarDctCodestreamImpl(
   resource_budget_internal::PublicationVector<VarDctEncodingAttemptTiming> attempt_timings;
   codestream_internal::VarDctEncodingProfile local_profile;
   gpu_profile_internal::GpuExecutionProfile local_gpu_profile;
-  if (codestream == nullptr || !linear_rgb.valid()) {
+  if (codestream == nullptr || (!linear_rgb.valid() && resident_input == nullptr)) {
     return Status::InvalidArgument(
       "VarDCT encoding input or output is invalid");
   }
@@ -2054,7 +2054,8 @@ Status EncodeResidentLinearRgbVarDctCodestreamOwned(ResidentEncodingInput input,
     return Status::InvalidArgument("Prepared input requires a forced resident GPU backend");
   }
   return EncodeLinearRgbVarDctCodestreamImpl(
-    input.linear_rgb, options, nullptr, false, true, codestream, nullptr, nullptr,
+    input.linear_rgb, options, input.backend, input.backend != nullptr,
+    input.backend == nullptr, codestream, nullptr, nullptr,
     nullptr, gpu_profile_internal::GpuProfilingMode::kDisabled, nullptr, nullptr,
     std::move(input.owner));
 }

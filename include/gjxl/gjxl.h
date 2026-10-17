@@ -30,6 +30,7 @@ extern "C" {
 
 typedef struct GJXLContext GJXLContext;
 typedef struct GJXLExecutionDomain GJXLExecutionDomain;
+typedef struct GJXLEncoder GJXLEncoder;
 
 typedef int32_t GJXLResult;
 enum {
@@ -223,6 +224,62 @@ typedef struct {
   uint8_t* data;
   size_t size;
 } GJXLBuffer;
+
+typedef struct {
+  uint32_t struct_size;
+  int32_t device;
+  uint32_t contexts;
+  /// Hard cap on encoder device storage, including all lane arenas. Nonzero.
+  uint64_t device_memory_bytes;
+  /// Persistent workers; concurrency is min(cpu_threads, contexts). Nonzero.
+  uint32_t cpu_threads;
+} GJXLEncoderCreateOptions;
+
+typedef struct {
+  uint32_t struct_size;
+  const uint8_t* device_pixels;
+  /// Positive byte strides. CHW: H*W, 1, W; HWC: 1, 3, pitch.
+  int64_t channel_stride;
+  int64_t pixel_stride;
+  int64_t row_stride;
+  /// Valid dimensions in [1, 512]. Output is always zero-padded to 512x512.
+  uint32_t width, height;
+} GJXLDeviceTileRGB8;
+
+typedef struct {
+  uint32_t struct_size;
+  const GJXLDeviceTileRGB8* tiles;
+  size_t count;
+  /// Borrowed cudaEvent_t handles in the selected device's primary context.
+  /// The producer must have recorded its event before this call. Zero = none.
+  uintptr_t producer_event;
+  /// Recorded after the last input-reading kernel, before entropy coding.
+  /// Keep both events alive through the call; do not reuse them concurrently.
+  /// CUDA treats an unrecorded event as complete. To poll during this blocking
+  /// call, first arm consumed_event with an unfinished record on an independent
+  /// stream. A stream wait issued before our record observes the old record;
+  /// otherwise wait/query only after this function returns.
+  uintptr_t consumed_event;
+} GJXLDeviceBatch;
+
+/// Creates private streams, fixed device arenas and persistent CPU workers in
+/// the CUDA primary context. Does not take ownership of caller pointers/events.
+/// A cap too small for a tile returns RESOURCE_PLAN_EXCEEDED; it never grows.
+GJXL_API GJXLResult gjxl_encoder_create(const GJXLEncoderCreateOptions* options,
+                                       GJXLEncoder** encoder) GJXL_NOEXCEPT;
+/// The caller must finish all encode calls before destroying the encoder.
+GJXL_API void gjxl_encoder_destroy(GJXLEncoder* encoder) GJXL_NOEXCEPT;
+/// Synchronous, thread-safe, round-robin across concurrent batches. Outputs
+/// must be empty; free successful buffers with gjxl_buffer_free. On failure
+/// every output stays empty and all submitted input reads are complete.
+GJXL_API GJXLResult gjxl_encoder_encode_device(
+  GJXLEncoder* encoder, const GJXLDeviceBatch* batch,
+  const GJXLEncoderOptions* options, GJXLBuffer* outputs) GJXL_NOEXCEPT;
+/// RGB8 sRGB host input with valid dimensions [1,512], padded on device like
+/// device input. The source storage must remain immutable through the call.
+GJXL_API GJXLResult gjxl_encoder_encode_host(
+  GJXLEncoder* encoder, const GJXLImageView* tiles, size_t count,
+  const GJXLEncoderOptions* options, GJXLBuffer* outputs) GJXL_NOEXCEPT;
 
 /// Initializes context options and defaults to GJXL_BACKEND_AUTO.
 /// caller_size must describe the complete caller allocation and fit uint32_t.

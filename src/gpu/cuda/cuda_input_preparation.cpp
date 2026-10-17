@@ -18,6 +18,7 @@
 #include "gpu/cuda/cuda_aq_exact_kernels.h"
 #include "gpu/cuda/cuda_backend_internal.h"
 #include "gpu/cuda/cuda_storage_plan.h"
+#include "gpu/cuda/cuda_rgb8_input.h"
 #include "gpu/scratch.h"
 #include "gpu/submission.h"
 
@@ -208,6 +209,42 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
     return Status::Ok();
   }
 
+  Status PrepareRgb8(const Rgb8Preparation& preparation) {
+    size_t capacity = 0;
+    Status status = ComputeCudaInputStoragePlan({512, 512}, &capacity);
+    if (!status.ok()) return status;
+    status = arena_.Prepare(*backend_, capacity);
+    if (!status.ok()) return status;
+    for (auto* image : {&original_, &coding_}) {
+      for (auto& plane : *image) {
+        status = arena_.AllocatePlane(DeviceElementType::kF32, {512, 512},
+                                       512, kArenaAlignment, &plane);
+        if (!status.ok()) return status;
+      }
+    }
+    status = arena_.AllocatePlane(DeviceElementType::kI32, {4, 1}, 4,
+                                  kArenaAlignment, &results_);
+    if (!status.ok()) return status;
+    Context context{
+      .owner = this,
+      .linear_rgb = {},
+      .params = {512, 512, 512, 512, 512, 512, 255.0f,
+                 preparation.compute_matrix_scale_stats ? 1u : 0u},
+      .host_results = {},
+      .rgb8 = &preparation,
+    };
+    std::unique_ptr<GpuSubmission> submission;
+    status = backend_->SubmitCompute(&Encode, &context, &submission);
+    if (!status.ok()) return status;
+    status = submission->Wait();
+    if (!status.ok()) return status;
+    if (context.host_results[3] != 0)
+      return Status::Internal("RGB8 input preparation produced non-finite samples");
+    for (size_t i = 0; i < 3; ++i)
+      matrix_scale_stats_[i] = std::bit_cast<float>(context.host_results[i]);
+    return Status::Ok();
+  }
+
   ConstDeviceImage3View original_linear_rgb() const noexcept override {
     return ConstImage(original_);
   }
@@ -235,6 +272,7 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
     ConstImage3FView linear_rgb;
     CudaLinearRgbToOpsinParams params;
     std::array<uint32_t, 4> host_results{};
+    const Rgb8Preparation* rgb8 = nullptr;
   };
 
   static cudaError_t Encode(
@@ -242,7 +280,8 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
     auto& context = *static_cast<Context*>(const_cast<void*>(opaque));
     CudaPreparedLinearRgbOpsin& self = *context.owner;
     cudaError_t status = cudaSuccess;
-    for (size_t channel = 0; channel < 3 && status == cudaSuccess; ++channel) {
+    for (size_t channel = 0; context.rgb8 == nullptr && channel < 3 &&
+                             status == cudaSuccess; ++channel) {
       const ConstPlaneF32View source = context.linear_rgb.plane[channel];
       status = cudaMemcpy2DAsync(Pointer<float>(self.original_[channel]),
         self.original_[channel].row_stride * sizeof(float),
@@ -259,7 +298,33 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
         4 * sizeof(uint32_t),
         backend.state_->stream);
     }
-    if (status == cudaSuccess) {
+    if (status == cudaSuccess && context.rgb8 != nullptr) {
+      const auto& p = *context.rgb8;
+      if (p.producer != nullptr)
+        status = cudaStreamWaitEvent(backend.state_->stream, p.producer, 0);
+      if (status == cudaSuccess && p.host_pixels != nullptr) {
+        status = cudaMemcpy2DAsync(const_cast<uint8_t*>(p.input.pixels),
+          p.input.row_stride, p.host_pixels, p.host_row_stride,
+          p.input.width * 3, p.input.height, cudaMemcpyHostToDevice,
+          backend.state_->stream);
+      }
+      if (status == cudaSuccess)
+        status = LaunchCudaRgb8ToOpsin(p.input,
+          {Pointer<float>(self.original_[0]), Pointer<float>(self.original_[1]),
+           Pointer<float>(self.original_[2])},
+          {Pointer<float>(self.coding_[0]), Pointer<float>(self.coding_[1]),
+           Pointer<float>(self.coding_[2])}, Pointer<unsigned int>(self.results_) + 3,
+          backend.state_->stream);
+      if (status == cudaSuccess && p.input_done != nullptr)
+        status = cudaEventRecord(p.input_done, backend.state_->stream);
+      if (status == cudaSuccess && p.consumed != nullptr)
+        status = p.consumed(p.consumed_context, p.input_done);
+      if (status == cudaSuccess && context.params.compute_matrix_scale_stats)
+        status = LaunchCudaOpsinMatrixScaleStats(
+          {Pointer<float>(self.coding_[0]), Pointer<float>(self.coding_[1]),
+           Pointer<float>(self.coding_[2])}, Pointer<unsigned int>(self.results_),
+          Pointer<unsigned int>(self.results_) + 3, context.params, backend.state_->stream);
+    } else if (status == cudaSuccess) {
       status =
         LaunchCudaLinearRgbToOpsin({Pointer<const float>(self.original_[0]),
                                      Pointer<const float>(self.original_[1]),
@@ -295,6 +360,15 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
   DevicePlaneView results_{};
   std::array<float, 3> matrix_scale_stats_{};
 };
+
+Status PrepareCudaRgb8Input(CudaBackend& backend, const Rgb8Preparation& input,
+                           std::unique_ptr<PreparedResidentInput>* prepared) {
+  auto candidate = std::make_unique<CudaPreparedLinearRgbOpsin>(backend);
+  Status status = candidate->PrepareRgb8(input);
+  if (!status.ok()) return status;
+  *prepared = std::move(candidate);
+  return Status::Ok();
+}
 
 Status CudaBackend::PrepareResidentInput(
   const ResidentInputPreparation& preparation,

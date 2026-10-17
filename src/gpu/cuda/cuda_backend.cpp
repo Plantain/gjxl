@@ -4,6 +4,7 @@
 #include "gpu/cuda/cuda_backend.h"
 
 #include <cuda_runtime_api.h>
+#include <cuda.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <map>
 #include <new>
 #include <string>
 #include <string_view>
@@ -42,6 +44,7 @@ PoolRegistry& MemoryPools() {
 
 cudaError_t AllocateDeviceMemory(CudaDeviceState& state, size_t size_bytes,
                                  void** pointer) {
+  if (state.fixed_arena != nullptr) return state.AllocateFixed(size_bytes, pointer);
 #if CUDART_VERSION >= 11020
   if (state.memory_pool != nullptr) {
     std::lock_guard lock(state.submission_mutex);
@@ -52,7 +55,11 @@ cudaError_t AllocateDeviceMemory(CudaDeviceState& state, size_t size_bytes,
   return cudaMalloc(pointer, size_bytes);
 }
 
-void FreeDeviceMemory(CudaDeviceState& state, void* pointer) {
+void FreeDeviceMemory(CudaDeviceState& state, void* pointer, size_t bytes) {
+  if (state.fixed_arena != nullptr) {
+    state.FreeFixed(pointer, bytes);
+    return;
+  }
 #if CUDART_VERSION >= 11020
   if (state.memory_pool != nullptr) {
     std::lock_guard lock(state.submission_mutex);
@@ -360,12 +367,60 @@ ScopedCudaDevice::~ScopedCudaDevice() {
   }
 }
 
+cudaError_t CudaDeviceState::AllocateFixed(size_t bytes, void** pointer) {
+  if (bytes > SIZE_MAX - 255) return cudaErrorMemoryAllocation;
+  bytes = (bytes + 255) & ~size_t{255};
+  std::lock_guard lock(arena_mutex);
+  if (active_fixed_buffers == 128) return cudaErrorMemoryAllocation;
+  for (auto& range : free_ranges) {
+    if (range.bytes < bytes) continue;
+    *pointer = static_cast<std::byte*>(fixed_arena) + range.offset;
+    range.offset += bytes;
+    range.bytes -= bytes;
+    ++active_fixed_buffers;
+    return cudaSuccess;
+  }
+  return cudaErrorMemoryAllocation;
+}
+
+void CudaDeviceState::FreeFixed(void* pointer, size_t bytes) noexcept {
+  // All users of a private arena submit to the same lane stream. Reusing a
+  // range on that stream orders its next writes after every earlier read.
+  bytes = (bytes + 255) & ~size_t{255};
+  size_t offset = static_cast<std::byte*>(pointer) - static_cast<std::byte*>(fixed_arena);
+  std::lock_guard lock(arena_mutex);
+  --active_fixed_buffers;
+  for (auto& range : free_ranges) {
+    if (range.bytes == 0) continue;
+    if (range.offset + range.bytes == offset) {
+      offset = range.offset;
+      bytes += range.bytes;
+      range.bytes = 0;
+    } else if (offset + bytes == range.offset) {
+      bytes += range.bytes;
+      range.bytes = 0;
+    }
+  }
+  for (auto& range : free_ranges) {
+    if (range.bytes != 0) continue;
+    range = {offset, bytes};
+    return;
+  }
+  // At most 128 simultaneous scratch owners are allowed by this arena. A
+  // missing slot indicates a lifetime bug, never permission to allocate more.
+  std::terminate();
+}
+
 CudaDeviceState::~CudaDeviceState() {
   ScopedCudaDevice device(ordinal);
   if (device.status() == cudaSuccess && stream != nullptr) {
     // Buffers and submissions share this state. At its final release all
     // pooled frees have been queued; complete them before destroying the lane.
-    if (memory_pool != nullptr) (void)cudaStreamSynchronize(stream);
+    if (memory_pool != nullptr || fixed_arena != nullptr)
+      (void)cudaStreamSynchronize(stream);
+    for (cudaEvent_t event : idle_events)
+      if (event != nullptr) (void)cudaEventDestroy(event);
+    if (fixed_arena != nullptr) (void)cudaFree(fixed_arena);
     (void)cudaStreamDestroy(stream);
   }
 }
@@ -391,7 +446,7 @@ CudaBuffer::~CudaBuffer() {
     } catch (const std::bad_alloc&) {
       // Cache bookkeeping is opportunistic; backing destruction must succeed.
     }
-    if (!cached) FreeDeviceMemory(*state_, pointer_);
+    if (!cached) FreeDeviceMemory(*state_, pointer_, size_bytes());
   }
 }
 
@@ -404,12 +459,21 @@ CudaSubmission::CudaSubmission(
   gpu_profile_internal::GpuProfilingMode mode)
   : state_(std::move(state)), event_(event),
     profile_begin_(profile_begin), profile_(std::move(profile)), profile_mode_(mode),
-    fail_completion_(fail_completion) {}
+    fail_completion_(fail_completion),
+    reusable_event_(state_->fixed_arena != nullptr &&
+                    mode == gpu_profile_internal::GpuProfilingMode::kDisabled) {}
 
 CudaSubmission::~CudaSubmission() {
   ScopedCudaDevice device(state_->ordinal);
   if (device.status() == cudaSuccess && event_ != nullptr) {
-    (void)cudaEventDestroy(event_);
+    if (reusable_event_) {
+      (void)Wait();
+      std::lock_guard lock(state_->event_mutex);
+      for (auto& idle : state_->idle_events) {
+        if (idle == nullptr) { idle = std::exchange(event_, nullptr); break; }
+      }
+    }
+    if (event_ != nullptr) (void)cudaEventDestroy(event_);
   }
   if (device.status() == cudaSuccess && profile_begin_ != nullptr) {
     (void)cudaEventDestroy(profile_begin_);
@@ -496,11 +560,14 @@ Status CudaBackend::Allocate(
         if (!status.ok()) return status;
         error = AllocateDeviceMemory(*state_, size_bytes, &pointer);
       }
-      if (error != cudaSuccess)
+      if (error != cudaSuccess) {
+        if (state_->fixed_arena != nullptr && error == cudaErrorMemoryAllocation)
+          return Status::ResourcePlanExceeded("Resident CUDA lane arena exhausted");
         return CudaRuntimeStatus(error, "Allocate CUDA device buffer");
+      }
       status = allocation.Commit();
       if (!status.ok()) {
-        FreeDeviceMemory(*state_, pointer);
+        FreeDeviceMemory(*state_, pointer, size_bytes);
         return status;
       }
     }
@@ -508,7 +575,7 @@ Status CudaBackend::Allocate(
         state_, id(), size_bytes, pointer, std::move(allocation), generation);
     *out = std::move(candidate);
   } catch (const std::bad_alloc&) {
-    if (pointer != nullptr) FreeDeviceMemory(*state_, pointer);
+    if (pointer != nullptr) FreeDeviceMemory(*state_, pointer, size_bytes);
     return Status::OutOfMemory("Allocate CUDA buffer owner");
   }
   RecordSuccessfulAllocation();
@@ -845,8 +912,19 @@ Status CudaBackend::SubmitCompute(
   }
   cudaEvent_t event = nullptr;
   cudaEvent_t begin = nullptr;
-  cudaError_t error = cudaEventCreateWithFlags(
-    &event, profiling ? cudaEventDefault : cudaEventDisableTiming);
+  cudaError_t error = cudaSuccess;
+  const bool reusable = state_->fixed_arena != nullptr && !profiling;
+  if (reusable) {
+    std::lock_guard lock(state_->event_mutex);
+    for (auto& idle : state_->idle_events) {
+      if (idle != nullptr) { event = std::exchange(idle, nullptr); break; }
+    }
+    if (event == nullptr)
+      return Status::ResourcePlanExceeded("Resident CUDA completion events exhausted");
+  } else {
+    error = cudaEventCreateWithFlags(
+      &event, profiling ? cudaEventDefault : cudaEventDisableTiming);
+  }
   if (error != cudaSuccess) {
     return CudaRuntimeStatus(error, "Create CUDA completion event");
   }
@@ -865,7 +943,12 @@ Status CudaBackend::SubmitCompute(
         fail_next_completion_.exchange(false, std::memory_order_relaxed),
       begin, std::move(recorded), mode));
   } catch (const std::bad_alloc&) {
-    (void)cudaEventDestroy(event);
+    if (reusable) {
+      std::lock_guard lock(state_->event_mutex);
+      for (auto& idle : state_->idle_events) {
+        if (idle == nullptr) { idle = event; break; }
+      }
+    } else { (void)cudaEventDestroy(event); }
     if (begin != nullptr) (void)cudaEventDestroy(begin);
     return Status::OutOfMemory("Allocate CUDA submission owner");
   }
@@ -1072,7 +1155,21 @@ Status CreateCudaBackend(
   if (error != cudaSuccess) {
     return cuda_internal::CudaRuntimeStatus(error, "Create CUDA stream");
   }
-  error = cuda_internal::InitializeCudaDctBasis();
+  static std::mutex basis_mutex;
+  static std::map<CUcontext, bool> basis_ready;
+  try {
+    std::lock_guard lock(basis_mutex);
+    CUcontext context = nullptr;
+    if (cuCtxGetCurrent(&context) != CUDA_SUCCESS || context == nullptr) {
+      error = cudaErrorInitializationError;
+    } else if (!basis_ready[context]) {
+      error = cuda_internal::InitializeCudaDctBasis();
+      if (error == cudaSuccess) basis_ready[context] = true;
+    }
+  } catch (const std::bad_alloc&) {
+    (void)cudaStreamDestroy(stream);
+    return Status::OutOfMemory("Register CUDA transform tables");
+  }
   if (error != cudaSuccess) {
     (void)cudaStreamDestroy(stream);
     return cuda_internal::CudaRuntimeStatus(error, "Initialize CUDA DCT basis");
@@ -1085,7 +1182,18 @@ Status CreateCudaBackend(
     state->maximum_grid_x = static_cast<size_t>(properties.maxGridSize[0]);
     state->maximum_threads_per_block =
       static_cast<size_t>(properties.maxThreadsPerBlock);
-    if (options.use_stream_ordered_allocation) {
+    if (options.fixed_arena_bytes != 0) {
+      error = cudaMalloc(&state->fixed_arena, options.fixed_arena_bytes);
+      if (error != cudaSuccess)
+        return cuda_internal::CudaRuntimeStatus(error, "Allocate resident CUDA arena");
+      state->fixed_arena_bytes = options.fixed_arena_bytes;
+      state->free_ranges[0] = {0, options.fixed_arena_bytes};
+      for (auto& event : state->idle_events) {
+        error = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        if (error != cudaSuccess)
+          return cuda_internal::CudaRuntimeStatus(error, "Create resident CUDA events");
+      }
+    } else if (options.use_stream_ordered_allocation) {
       const uint64_t threshold =
           options.memory_pool_release_threshold_bytes.value_or(
               std::min<uint64_t>(properties.totalGlobalMem / 2,

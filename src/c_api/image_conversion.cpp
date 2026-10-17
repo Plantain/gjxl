@@ -13,7 +13,6 @@
 #include <utility>
 
 namespace gjxl::c_api_internal {
-namespace {
 
 [[nodiscard]] const std::array<float, 256>& SrgbToLinearTable() {
   static const std::array<float, 256> table = [] {
@@ -29,6 +28,8 @@ namespace {
   }();
   return table;
 }
+
+namespace {
 
 [[nodiscard]] bool TryRequiredSize(size_t row_bytes, size_t row_stride,
                                    size_t height, size_t* required_size) {

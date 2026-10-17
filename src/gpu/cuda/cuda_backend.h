@@ -35,6 +35,11 @@ struct CudaBackendOptions {
   // A runtime allocation OOM evicts completed buffers from this private pool
   // and retries once. Live buffers and other libraries' pools are unchanged.
   std::optional<uint64_t> memory_pool_release_threshold_bytes;
+
+  // Private fixed arena for the resident tile API. Zero preserves the legacy
+  // allocator. Nonzero preallocates this many bytes and prohibits all further
+  // device allocations on this lane, including after scratch-capacity misses.
+  size_t fixed_arena_bytes = 0;
 };
 
 /// Creates a CUDA backend on the requested runtime device.

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "c_api/image_conversion.h"
+#include "c_api/resident_encoder.h"
 #include "codestream/modular/workflow.h"
 #include "codestream/modular/search.h"
 #include "codestream/workflow_admission_scope.h"
@@ -35,6 +36,10 @@ struct GJXLContext {
     gjxl::VarDctBackendPreference::kAutomatic;
   size_t cpu_thread_count = 0;
   std::shared_ptr<const gjxl::ExecutionDomain> execution_domain;
+};
+
+struct GJXLEncoder {
+  std::unique_ptr<gjxl::c_api_internal::ResidentEncoder> value;
 };
 
 struct GJXLExecutionDomain {
@@ -327,6 +332,71 @@ GJXLResult ParseCompressionMode(
   }
 }
 
+GJXLResult ParseEncodingOptions(const GJXLEncoderOptions* options,
+                                gjxl::VarDctEncodingOptions* encoding) {
+  if (options == nullptr)
+    return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Encoder options must not be null");
+  GJXLResult result = ValidateSizedStruct(options->struct_size, kEncoderOptionsV1Size,
+                                         "Encoder options struct is too small");
+  if (result != GJXL_OK) return result;
+  gjxl::VarDctCompressionMode compression_mode =
+    gjxl::VarDctCompressionMode::kAutomatic;
+  if (options->struct_size >= kEncoderOptionsCompressionModeSize) {
+    result = ParseCompressionMode(options->compression_mode,
+                                  &compression_mode);
+    if (result != GJXL_OK) {
+      return result;
+    }
+  }
+  gjxl::VarDctDcPrediction dc_prediction = gjxl::kDefaultDcPrediction;
+  if (options->struct_size >= kEncoderOptionsDcPredictionSize) {
+    switch (options->dc_prediction) {
+    case GJXL_DC_PREDICTION_GRADIENT:
+      dc_prediction = gjxl::VarDctDcPrediction::kGradient;
+      break;
+    case GJXL_DC_PREDICTION_WEIGHTED:
+      dc_prediction = gjxl::VarDctDcPrediction::kWeighted;
+      break;
+    default:
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid DC prediction");
+    }
+  }
+  gjxl::DcQuantizationMode dc_quantization = gjxl::DcQuantizationMode::kAutomatic;
+  if (options->struct_size >= kEncoderOptionsDcQuantizationSize) {
+    switch (options->dc_quantization) {
+    case GJXL_DC_QUANTIZATION_AUTOMATIC:
+      break;
+    case GJXL_DC_QUANTIZATION_ROUND:
+      dc_quantization = gjxl::DcQuantizationMode::kRound;
+      break;
+    case GJXL_DC_QUANTIZATION_PREDICTION_AWARE:
+      dc_quantization = gjxl::DcQuantizationMode::kPredictionAware;
+      break;
+    default:
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid DC quantization");
+    }
+  }
+  std::optional<bool> adaptive_dc_smoothing;
+  if (options->struct_size >= kEncoderOptionsDcSmoothingSize) {
+    if (options->adaptive_dc_smoothing > GJXL_DC_SMOOTHING_AUTOMATIC)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid adaptive DC smoothing");
+    if (options->adaptive_dc_smoothing != GJXL_DC_SMOOTHING_AUTOMATIC)
+      adaptive_dc_smoothing = options->adaptive_dc_smoothing == GJXL_DC_SMOOTHING_ENABLED;
+  }
+  result = ValidateEncoderOptions(*options);
+  if (result != GJXL_OK) {
+    return result;
+  }
+
+  encoding->butteraugli_target = options->distance;
+  encoding->effort = options->effort;
+  encoding->compression_mode = compression_mode;
+  encoding->dc_prediction = dc_prediction;
+  encoding->dc_quantization = dc_quantization;
+  encoding->adaptive_dc_smoothing = adaptive_dc_smoothing;
+  return ParsePresetOptions(*options, encoding);
+}
+
 }  // namespace
 
 namespace gjxl {
@@ -561,54 +631,9 @@ GJXLResult gjxl_encode(
       return result;
     }
 
-    gjxl::VarDctCompressionMode compression_mode =
-      gjxl::VarDctCompressionMode::kAutomatic;
-    if (options->struct_size >= kEncoderOptionsCompressionModeSize) {
-      result = ParseCompressionMode(options->compression_mode,
-                                    &compression_mode);
-      if (result != GJXL_OK) {
-        return result;
-      }
-    }
-    gjxl::VarDctDcPrediction dc_prediction = gjxl::kDefaultDcPrediction;
-    if (options->struct_size >= kEncoderOptionsDcPredictionSize) {
-      switch (options->dc_prediction) {
-      case GJXL_DC_PREDICTION_GRADIENT:
-        dc_prediction = gjxl::VarDctDcPrediction::kGradient;
-        break;
-      case GJXL_DC_PREDICTION_WEIGHTED:
-        dc_prediction = gjxl::VarDctDcPrediction::kWeighted;
-        break;
-      default:
-        return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid DC prediction");
-      }
-    }
-    gjxl::DcQuantizationMode dc_quantization = gjxl::DcQuantizationMode::kAutomatic;
-    if (options->struct_size >= kEncoderOptionsDcQuantizationSize) {
-      switch (options->dc_quantization) {
-      case GJXL_DC_QUANTIZATION_AUTOMATIC:
-        break;
-      case GJXL_DC_QUANTIZATION_ROUND:
-        dc_quantization = gjxl::DcQuantizationMode::kRound;
-        break;
-      case GJXL_DC_QUANTIZATION_PREDICTION_AWARE:
-        dc_quantization = gjxl::DcQuantizationMode::kPredictionAware;
-        break;
-      default:
-        return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid DC quantization");
-      }
-    }
-    std::optional<bool> adaptive_dc_smoothing;
-    if (options->struct_size >= kEncoderOptionsDcSmoothingSize) {
-      if (options->adaptive_dc_smoothing > GJXL_DC_SMOOTHING_AUTOMATIC)
-        return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid adaptive DC smoothing");
-      if (options->adaptive_dc_smoothing != GJXL_DC_SMOOTHING_AUTOMATIC)
-        adaptive_dc_smoothing = options->adaptive_dc_smoothing == GJXL_DC_SMOOTHING_ENABLED;
-    }
-    result = ValidateEncoderOptions(*options);
-    if (result != GJXL_OK) {
-      return result;
-    }
+    gjxl::VarDctEncodingOptions encoding_options;
+    result = ParseEncodingOptions(options, &encoding_options);
+    if (result != GJXL_OK) return result;
 
     gjxl::c_api_internal::PackedPixelFormat packed_format;
     result = ParsePixelFormat(image->pixel_format, &packed_format);
@@ -632,13 +657,6 @@ GJXLResult gjxl_encode(
       result = TranslateStatus(gjxl::c_api_internal::ValidatePackedSrgbImage(packed_image));
       if (result != GJXL_OK) return result;
     }
-    gjxl::VarDctEncodingOptions encoding_options;
-    encoding_options.butteraugli_target = options->distance;
-    encoding_options.effort = options->effort;
-    encoding_options.compression_mode = compression_mode;
-    encoding_options.dc_prediction = dc_prediction;
-    encoding_options.dc_quantization = dc_quantization;
-    encoding_options.adaptive_dc_smoothing = adaptive_dc_smoothing;
     encoding_options.backend = context->backend;
     encoding_options.cpu_thread_count = context->cpu_thread_count;
     encoding_options.execution_domain = context->execution_domain;
@@ -647,8 +665,6 @@ GJXLResult gjxl_encode(
     encoding_options.source_is_srgb8 =
       image->pixel_format == GJXL_PIXEL_FORMAT_RGB8_SRGB ||
       image->pixel_format == GJXL_PIXEL_FORMAT_RGBA8_SRGB;
-    result = ParsePresetOptions(*options, &encoding_options);
-    if (result != GJXL_OK) return result;
     gjxl::codestream_internal::WorkflowAdmission admission;
     size_t admission_bytes = 0;
     if (gjxl::resource_budget_internal::CurrentResourceContext().reservation == nullptr) {
@@ -706,6 +722,55 @@ GJXLResult gjxl_encode(
     }
 
     return PublishCodestream(codestream, output);
+  });
+}
+
+GJXLResult gjxl_encoder_create(const GJXLEncoderCreateOptions* options,
+                               GJXLEncoder** encoder) noexcept {
+  return Guard([&]() -> GJXLResult {
+    if (options == nullptr || encoder == nullptr || *encoder != nullptr ||
+        options->struct_size < sizeof(*options) || options->device < 0 ||
+        options->contexts == 0 || options->contexts > GJXL_MAX_CPU_THREADS ||
+        options->cpu_threads == 0 || options->cpu_threads > GJXL_MAX_CPU_THREADS ||
+        options->device_memory_bytes == 0)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid resident encoder creation options");
+    auto candidate = std::make_unique<GJXLEncoder>();
+    const GJXLResult result = TranslateStatus(
+      gjxl::c_api_internal::CreateResidentEncoder(*options, &candidate->value));
+    if (result != GJXL_OK) return result;
+    *encoder = candidate.release();
+    return GJXL_OK;
+  });
+}
+
+void gjxl_encoder_destroy(GJXLEncoder* encoder) noexcept {
+  ClearLastError();
+  delete encoder;
+}
+
+GJXLResult gjxl_encoder_encode_device(GJXLEncoder* encoder,
+  const GJXLDeviceBatch* batch, const GJXLEncoderOptions* options,
+  GJXLBuffer* outputs) noexcept {
+  return Guard([&]() -> GJXLResult {
+    if (encoder == nullptr || batch == nullptr || batch->struct_size < sizeof(*batch))
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid resident device batch");
+    gjxl::VarDctEncodingOptions encoding;
+    GJXLResult result = ParseEncodingOptions(options, &encoding);
+    if (result != GJXL_OK) return result;
+    return TranslateStatus(encoder->value->EncodeDevice(*batch, encoding, outputs));
+  });
+}
+
+GJXLResult gjxl_encoder_encode_host(GJXLEncoder* encoder,
+  const GJXLImageView* tiles, size_t count, const GJXLEncoderOptions* options,
+  GJXLBuffer* outputs) noexcept {
+  return Guard([&]() -> GJXLResult {
+    if (encoder == nullptr)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Resident encoder must not be null");
+    gjxl::VarDctEncodingOptions encoding;
+    GJXLResult result = ParseEncodingOptions(options, &encoding);
+    if (result != GJXL_OK) return result;
+    return TranslateStatus(encoder->value->EncodeHost(tiles, count, encoding, outputs));
   });
 }
 

@@ -1278,8 +1278,9 @@ Status ValidateAdaptiveQuantizationPolicyMetadataForExtent(
   Extent2D opsin_extent,
   const AcStrategyGrid& strategies,
   ConstPlaneU8View epf_sharpness,
-  AdaptiveQuantizationOptions options) {
-  if (!original_linear_rgb.valid() || opsin_extent.empty() ||
+  AdaptiveQuantizationOptions options, bool device_source) {
+  if ((!device_source && !original_linear_rgb.valid()) ||
+      original_linear_rgb.extent().empty() || opsin_extent.empty() ||
       !strategies.complete() || !epf_sharpness.valid()) {
     return Status::InvalidArgument(
       "Adaptive-quantization inputs are invalid");
@@ -1367,9 +1368,10 @@ Status ValidateResidentAdaptiveQuantizationPolicyInputs(
 Status ValidateDeferredAdaptiveQuantizationPolicyInputs(
     ConstImage3FView original_linear_rgb, Extent2D opsin_extent,
     Extent2D block_extent, ConstPlaneF32View initial_quant_field,
-    ConstPlaneU8View epf_sharpness, AdaptiveQuantizationOptions options) {
+    ConstPlaneU8View epf_sharpness, AdaptiveQuantizationOptions options, bool device_source) {
 
-  if (!original_linear_rgb.valid() || opsin_extent.empty() ||
+  if ((!device_source && !original_linear_rgb.valid()) ||
+      original_linear_rgb.extent().empty() || opsin_extent.empty() ||
       block_extent.empty() || !initial_quant_field.valid() ||
       !epf_sharpness.valid()) {
     return Status::InvalidArgument(

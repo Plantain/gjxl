@@ -425,6 +425,7 @@ add_library(
   gjxl_c
   STATIC
   src/c_api/gjxl.cpp
+  src/c_api/resident_encoder.cpp
   $<TARGET_OBJECTS:gjxl_c_api_internal>
 )
 
@@ -466,7 +467,7 @@ target_link_libraries(
 )
 
 if(GJXL_BUILD_SHARED_LIBRARY)
-  add_library(gjxl_shared SHARED src/c_api/gjxl.cpp
+  add_library(gjxl_shared SHARED src/c_api/gjxl.cpp src/c_api/resident_encoder.cpp
     $<TARGET_OBJECTS:gjxl_c_api_internal>)
   add_library(gjxl::shared ALIAS gjxl_shared)
   set_target_properties(gjxl_shared PROPERTIES
@@ -650,6 +651,12 @@ install(
 
 
 if(GJXL_ENABLE_CUDA)
+  target_compile_definitions(gjxl_c PRIVATE GJXL_ENABLE_CUDA=1)
+  target_link_libraries(gjxl_c PRIVATE CUDA::cudart CUDA::cuda_driver)
+  if(GJXL_BUILD_SHARED_LIBRARY)
+    target_compile_definitions(gjxl_shared PRIVATE GJXL_ENABLE_CUDA=1)
+    target_link_libraries(gjxl_shared PRIVATE CUDA::cudart CUDA::cuda_driver)
+  endif()
   target_sources(gjxl_codestream PRIVATE src/codestream/cuda_workflow_storage_plan.cpp)
   add_library(
     gjxl_cuda
@@ -717,6 +724,7 @@ if(GJXL_ENABLE_CUDA)
       gjxl_gpu_ops
     PRIVATE
       CUDA::cudart
+      CUDA::cuda_driver
   )
 
   target_link_libraries(
@@ -3802,6 +3810,8 @@ if(GJXL_BUILD_BENCHMARKS)
 
   if(GJXL_ENABLE_CUDA)
     if(UNIX AND NOT APPLE)
+      add_executable(gjxl_resident_gate tools/e1/resident_gate.cpp)
+      target_link_libraries(gjxl_resident_gate PRIVATE gjxl_c CUDA::cudart CUDA::cuda_driver ${CMAKE_DL_LIBS})
       add_executable(satellite_tile_bench tools/satellite_tile_bench.cpp)
       target_link_libraries(satellite_tile_bench PRIVATE gjxl_c CUDA::cudart ${CMAKE_DL_LIBS})
       add_executable(satellite_tile_profile tools/satellite_tile_profile.cpp)

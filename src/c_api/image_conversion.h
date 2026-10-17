@@ -5,11 +5,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 
 #include "core/image_buffer.h"
 #include "core/status.h"
 
 namespace gjxl::c_api_internal {
+
+[[nodiscard]] const std::array<float, 256>& SrgbToLinearTable();
 
 struct PackedSrgbImageView;
 /// Shared no-allocation validation, including opaque-alpha verification.

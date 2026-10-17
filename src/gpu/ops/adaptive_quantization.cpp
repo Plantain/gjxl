@@ -425,7 +425,7 @@ Status RunGpuAdaptiveQuantizationImpl(
         original_linear_rgb,
         opsin.valid() ? opsin.extent()
                       : reusable->resident_coding_opsin.plane[0].extent,
-        block_extent, initial_quant_field, epf_sharpness, options);
+        block_extent, initial_quant_field, epf_sharpness, options, resident_prepared_input);
     } else if (resident_initial) {
       if (mode == GpuAdaptiveQuantizationMode::kExactCoefficients ||
           options.control_mode !=
@@ -440,7 +440,7 @@ Status RunGpuAdaptiveQuantizationImpl(
                 materialization.resident_coding_extent,
                 strategies,
                 epf_sharpness,
-                options)
+                options, true)
             : aqi::ValidateAdaptiveQuantizationPolicyMetadata(
                 original_linear_rgb, opsin, strategies, epf_sharpness, options);
       }
@@ -450,7 +450,7 @@ Status RunGpuAdaptiveQuantizationImpl(
         materialization.resident_coding_extent,
         strategies,
         epf_sharpness,
-        options);
+        options, true);
       if (status.ok() && (!initial_quant_field.valid() ||
                            initial_quant_field.extent != strategies.extent())) {
         status = Status::InvalidArgument(

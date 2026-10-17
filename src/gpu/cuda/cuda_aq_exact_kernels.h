@@ -56,6 +56,15 @@ struct CudaAqColorParams {
   float scale = 1.0f;
 };
 
+// Validated, positive byte strides; valid pixels occupy the upper-left of a
+// 512x512 tile. The same rounded lookup table is used by the host converter.
+struct CudaRgb8Input {
+  const uint8_t* pixels = nullptr;
+  int64_t channel_stride = 0, pixel_stride = 0, row_stride = 0;
+  uint32_t width = 0, height = 0;
+  const float* srgb_to_linear = nullptr;
+};
+
 struct CudaLinearRgbToOpsinParams {
   uint32_t source_width = 0;
   uint32_t source_height = 0;
@@ -66,6 +75,13 @@ struct CudaLinearRgbToOpsinParams {
   float intensity_target = 255.0f;
   uint32_t compute_matrix_scale_stats = 0;
 };
+
+[[nodiscard]] cudaError_t LaunchCudaRgb8ToOpsin(
+  CudaRgb8Input input, std::array<float*, 3> linear,
+  std::array<float*, 3> opsin, unsigned int* error, cudaStream_t stream);
+[[nodiscard]] cudaError_t LaunchCudaOpsinMatrixScaleStats(
+  std::array<float*, 3> opsin, unsigned int* stats, unsigned int* error,
+  CudaLinearRgbToOpsinParams params, cudaStream_t stream);
 
 [[nodiscard]] cudaError_t LaunchCudaAqScatterReconstruction(
     const CudaAqAnchor* anchors, const float* inverse,

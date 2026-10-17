@@ -150,11 +150,13 @@ inline void ConfigureInitialQuantizationPolicy(
   // adapter through its result retention/cache-trim epilogue.
   thread_budget_internal::CpuExecutionScope* outer_cpu_execution = nullptr);
 
-/// Internal synchronous packed-input handoff. The view borrows from owner;
-/// moving the complete object transfers both to the encoding workflow.
+/// Internal synchronous input handoff. A host view borrows from owner; a
+/// device-only source carries geometry with null host samples instead. Moving
+/// the complete object transfers the owner to the encoding workflow.
 struct ResidentEncodingInput {
   ConstImage3FView linear_rgb;
   std::unique_ptr<PreparedResidentInput> owner;
+  GpuBackend* backend = nullptr;  // Null resolves the existing production backend.
 };
 
 /// Called after C-adapter memory/CPU admission. Requires forced resident GPU

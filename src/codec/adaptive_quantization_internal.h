@@ -129,7 +129,8 @@ struct ButteraugliPolicySetup {
 [[nodiscard]] Status ValidateDeferredAdaptiveQuantizationPolicyInputs(
     ConstImage3FView original_linear_rgb, Extent2D opsin_extent,
     Extent2D block_extent, ConstPlaneF32View initial_quant_field,
-    ConstPlaneU8View epf_sharpness, AdaptiveQuantizationOptions options);
+    ConstPlaneU8View epf_sharpness, AdaptiveQuantizationOptions options,
+    bool device_source = false);
 
 [[nodiscard]] Status ValidateResidentAdaptiveQuantizationPolicyInputs(
   ConstImage3FView original_linear_rgb,
@@ -155,7 +156,7 @@ struct ButteraugliPolicySetup {
   Extent2D opsin_extent,
   const AcStrategyGrid& strategies,
   ConstPlaneU8View epf_sharpness,
-  AdaptiveQuantizationOptions options);
+  AdaptiveQuantizationOptions options, bool device_source = false);
 
 /// Runs initial adjustment, bounds, clamp, power, rounding-progress, and
 /// iteration order identically for every evaluator.

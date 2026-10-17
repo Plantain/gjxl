@@ -42,6 +42,7 @@ __device__ float FastCubeRootAndAdd(
   return fmaf(squared, value, add);
 }
 
+template <bool Rgb8>
 __global__ void LinearRgbToOpsinKernel(
   const float* input_r,
   const float* input_g,
@@ -50,7 +51,8 @@ __global__ void LinearRgbToOpsinKernel(
   float* output_y,
   float* output_b,
   unsigned int* error,
-  CudaLinearRgbToOpsinParams params) {
+  CudaLinearRgbToOpsinParams params,
+  CudaRgb8Input rgb8, float* linear_r, float* linear_g, float* linear_b) {
   const size_t index =
     static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const size_t count =
@@ -64,9 +66,24 @@ __global__ void LinearRgbToOpsinKernel(
   const uint32_t source_y = min(output_y_index, params.source_height - 1);
   const size_t source_index =
     static_cast<size_t>(source_y) * params.source_stride + source_x;
-  const float red = input_r[source_index];
-  const float green = input_g[source_index];
-  const float blue = input_b[source_index];
+  float red, green, blue;
+  if constexpr (Rgb8) {
+    red = green = blue = 0.0f;
+    if (output_x_index < rgb8.width && output_y_index < rgb8.height) {
+      const uint8_t* pixel = rgb8.pixels +
+        output_y_index * rgb8.row_stride + output_x_index * rgb8.pixel_stride;
+      red = rgb8.srgb_to_linear[pixel[0]];
+      green = rgb8.srgb_to_linear[pixel[rgb8.channel_stride]];
+      blue = rgb8.srgb_to_linear[pixel[2 * rgb8.channel_stride]];
+    }
+    linear_r[index] = red;
+    linear_g[index] = green;
+    linear_b[index] = blue;
+  } else {
+    red = input_r[source_index];
+    green = input_g[source_index];
+    blue = input_b[source_index];
+  }
   if (!isfinite(red) || !isfinite(green) || !isfinite(blue)) {
     atomicOr(error, 1u);
   }
@@ -828,19 +845,35 @@ cudaError_t LaunchCudaLinearRgbToOpsin(
   const unsigned int padded_blocks =
     static_cast<unsigned int>((padded_count + kThreads - 1) / kThreads);
   if (::gjxl::cuda_internal::CudaKernelProfileScope profile_scope{"LinearRgbToOpsinKernel", padded_blocks, kThreads, stream}; profile_scope) {
-    LinearRgbToOpsinKernel<<<padded_blocks, kThreads, 0, stream>>>(input[0],
+    LinearRgbToOpsinKernel<false><<<padded_blocks, kThreads, 0, stream>>>(input[0],
       input[1],
       input[2],
       output[0],
       output[1],
       output[2],
       error,
-      params);
+      params, {}, nullptr, nullptr, nullptr);
   }
   cudaError_t status = cudaGetLastError();
   if (status != cudaSuccess || !params.compute_matrix_scale_stats) {
     return status;
   }
+  return LaunchCudaOpsinMatrixScaleStats(output, matrix_scale_stats, error, params, stream);
+}
+
+cudaError_t LaunchCudaRgb8ToOpsin(
+  CudaRgb8Input input, std::array<float*, 3> linear,
+  std::array<float*, 3> output, unsigned int* error, cudaStream_t stream) {
+  const CudaLinearRgbToOpsinParams params{512, 512, 512, 512, 512, 512, 255.0f, 1};
+  LinearRgbToOpsinKernel<true><<<1024, kThreads, 0, stream>>>(
+    nullptr, nullptr, nullptr, output[0], output[1], output[2], error, params,
+    input, linear[0], linear[1], linear[2]);
+  return cudaGetLastError();
+}
+
+cudaError_t LaunchCudaOpsinMatrixScaleStats(
+  std::array<float*, 3> output, unsigned int* matrix_scale_stats,
+  unsigned int* error, CudaLinearRgbToOpsinParams params, cudaStream_t stream) {
   const size_t source_count =
     static_cast<size_t>(params.source_width) * params.source_height;
   const unsigned int source_blocks =

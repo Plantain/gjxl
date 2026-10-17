@@ -97,7 +97,8 @@ Status ValidatePipelineInputs(
 
   const Extent2D opsin_extent = resident_opsin
     ? resident_opsin_extent : opsin.extent();
-  if (!original_linear_rgb.valid() ||
+  if ((!resident_opsin && !original_linear_rgb.valid()) ||
+      original_linear_rgb.extent().empty() ||
       (!resident_opsin && !opsin.valid()) ||
       !BlockGrid::IsPaddedPixelExtent(opsin_extent) ||
       !std::isfinite(options.initial_quant_rescale) ||
@@ -359,7 +360,8 @@ Status quantization_pipeline_internal::PrepareResidentQuantizationPipeline(
              plane.extent == extent && plane.row_stride >= extent.width;
     });
   };
-  if (prepared == nullptr || !original_linear_rgb.valid() ||
+  // Device-only sources carry geometry, with null host sample pointers.
+  if (prepared == nullptr || original_linear_rgb.extent().empty() ||
       !BlockGrid::IsPaddedPixelExtent(padded_extent) ||
       !valid_resident_image(
         resident_original_linear_rgb, original_linear_rgb.extent()) ||

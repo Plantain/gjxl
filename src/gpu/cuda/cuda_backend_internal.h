@@ -102,6 +102,17 @@ struct CudaDeviceState {
   size_t maximum_threads_per_block = 0;
   std::mutex submission_mutex;
   std::shared_ptr<CudaMemoryPoolState> memory_pool;
+  void* fixed_arena = nullptr;
+  size_t fixed_arena_bytes = 0;
+  struct FreeRange { size_t offset = 0, bytes = 0; };
+  std::array<FreeRange, 256> free_ranges{};
+  size_t active_fixed_buffers = 0;
+  std::mutex arena_mutex;
+  std::array<cudaEvent_t, 32> idle_events{};
+  std::mutex event_mutex;
+
+  cudaError_t AllocateFixed(size_t bytes, void** pointer);
+  void FreeFixed(void* pointer, size_t bytes) noexcept;
 
   ~CudaDeviceState();
 };
@@ -163,6 +174,7 @@ class CudaSubmission final : public GpuSubmission {
   bool fail_completion_ = false;
   std::once_flag wait_once_;
   Status completion_status_;
+  bool reusable_event_ = false;
 };
 
 class CudaPreparedAqEvaluation;
