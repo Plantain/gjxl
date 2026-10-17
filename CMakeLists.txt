@@ -24,6 +24,11 @@ option(GJXL_BUILD_FRONTIER_EXPERIMENT "Build the isolated frontier-DP experiment
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
+option(GJXL_BUILD_SHARED_LIBRARY "Also build the C API as a shared library" OFF)
+if(GJXL_BUILD_SHARED_LIBRARY)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 option(
   GJXL_BUILD_TESTS
   "Build tests"
@@ -459,6 +464,23 @@ target_link_libraries(
   PRIVATE
     gjxl_codestream
 )
+
+if(GJXL_BUILD_SHARED_LIBRARY)
+  add_library(gjxl_shared SHARED src/c_api/gjxl.cpp
+    $<TARGET_OBJECTS:gjxl_c_api_internal>)
+  add_library(gjxl::shared ALIAS gjxl_shared)
+  set_target_properties(gjxl_shared PROPERTIES
+    EXPORT_NAME shared OUTPUT_NAME gjxl
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+  target_include_directories(gjxl_shared PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  target_compile_definitions(gjxl_shared PRIVATE GJXL_BUILDING_SHARED_LIBRARY)
+  target_compile_definitions(gjxl_shared INTERFACE GJXL_USING_SHARED_LIBRARY)
+  target_compile_options(gjxl_shared PRIVATE $<TARGET_PROPERTY:gjxl_c,COMPILE_OPTIONS>)
+  target_link_libraries(gjxl_shared PRIVATE gjxl_codestream)
+  install(TARGETS gjxl_shared EXPORT gjxlTargets)
+endif()
 
 # Floating-point interchange support used by the command-line frontend.
 add_library(
