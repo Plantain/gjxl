@@ -6,6 +6,7 @@
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstring>
 #include <limits>
@@ -136,9 +137,9 @@ class CudaResidentEncoder final : public ResidentEncoder {
       return Status::InvalidArgument("Resident encoding requires the CUDA primary context");
     if (options.device_memory_bytes <= kStaticDeviceAllowance)
       return Status::ResourcePlanExceeded("Resident device cap is too small");
-    const size_t arena_bytes = static_cast<size_t>(std::min<uint64_t>(kMaximumLaneBytes,
+    arena_bytes_ = static_cast<size_t>(std::min<uint64_t>(kMaximumLaneBytes,
       (options.device_memory_bytes - kStaticDeviceAllowance) / options.contexts)) & ~size_t{255};
-    if (arena_bytes == 0) return Status::ResourcePlanExceeded("Resident lane cap is too small");
+    if (arena_bytes_ == 0) return Status::ResourcePlanExceeded("Resident lane cap is too small");
     cudaError_t error = cudaStreamCreateWithFlags(&event_stream_, cudaStreamNonBlocking);
     if (error != cudaSuccess) return CudaRuntimeStatus(error, "Create input-consumption stream");
     error = cuda_internal::CreateCudaHostWait(&host_wait_);
@@ -147,23 +148,13 @@ class CudaResidentEncoder final : public ResidentEncoder {
     for (size_t i = 0; i < options.contexts; ++i) {
       auto lane = std::make_unique<Lane>();
       lane->device = device_;
-      CudaBackendOptions backend_options;
-      backend_options.device_ordinal = device_;
-      backend_options.fixed_arena_bytes = arena_bytes;
-      Status status = CreateCudaBackend(backend_options, &lane->backend);
-      if (!status.ok()) return status;
-      status = lane->backend->Allocate(256 * sizeof(float), &lane->table);
-      if (!status.ok()) return status;
-      status = lane->backend->CopyHostToDevice(*lane->table, SrgbToLinearTable().data(),
-                                               256 * sizeof(float), 0);
-      if (!status.ok()) return status;
-      status = lane->backend->Allocate(kTileBytes, &lane->upload);
-      if (!status.ok()) return status;
       error = cudaEventCreateWithFlags(
           &lane->input_done, cuda_internal::CudaCompletionEventFlags());
       if (error != cudaSuccess) return CudaRuntimeStatus(error, "Create input-consumption event");
       lanes_.push_back(std::move(lane));
     }
+    Status backing = AcquireLanes();
+    if (!backing.ok()) return backing;
     // Exercise the low-effort and resident AQ/token paths before publishing the
     // encoder. Scratch is suballocated from each already-fixed arena. This also
     // rejects an insufficient cap at creation instead of on the first batch.
@@ -191,6 +182,26 @@ class CudaResidentEncoder final : public ResidentEncoder {
     for (size_t i = 0; i < worker_count; ++i)
       workers_.emplace_back([this, i, worker_count] { Worker(i, worker_count); });
     return Status::Ok();
+  }
+
+  Status ReleaseDeviceMemory(uint64_t* released_bytes) override {
+    *released_bytes = 0;
+    release_requested_.store(true, std::memory_order_release);
+    std::unique_lock lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock() || active_batches_ != 0) {
+      work_.notify_one();
+      return Status::Ok();
+    }
+    ScopedCudaDevice selected(device_);
+    if (selected.status() != cudaSuccess)
+      return CudaRuntimeStatus(selected.status(), "Select resident release device");
+    *released_bytes = live_bytes_.load(std::memory_order_acquire);
+    ReleaseLanes();
+    return Status::Ok();
+  }
+
+  uint64_t DeviceMemoryBytes() const override {
+    return live_bytes_.load(std::memory_order_acquire);
   }
 
   Status EncodeDevice(const GJXLDeviceBatch& input, VarDctEncodingOptions options,
@@ -250,6 +261,45 @@ class CudaResidentEncoder final : public ResidentEncoder {
   }
 
  private:
+  // Called with mutex_ held (or before publishing the encoder). Backends own
+  // their constant caches and fixed arenas. No caller input/output is retained.
+  void ReleaseLanes() {
+    for (auto& lane : lanes_) {
+      lane->upload.reset();
+      lane->table.reset();
+      lane->backend.reset();
+    }
+    live_bytes_.store(0, std::memory_order_release);
+    release_requested_.store(false, std::memory_order_release);
+  }
+
+  Status AcquireLanes() {
+    if (live_bytes_.load(std::memory_order_acquire) != 0) return Status::Ok();
+    Status status = CatchStatus([&]() -> Status {
+      for (auto& lane : lanes_) {
+        CudaBackendOptions options;
+        options.device_ordinal = device_;
+        options.fixed_arena_bytes = arena_bytes_;
+        Status result = CreateCudaBackend(options, &lane->backend);
+        if (!result.ok()) return result;
+        result = lane->backend->Allocate(256 * sizeof(float), &lane->table);
+        if (!result.ok()) return result;
+        result = lane->backend->CopyHostToDevice(*lane->table,
+            SrgbToLinearTable().data(), 256 * sizeof(float), 0);
+        if (!result.ok()) return result;
+        result = lane->backend->Allocate(kTileBytes, &lane->upload);
+        if (!result.ok()) return result;
+      }
+      return Status::Ok();
+    });
+    if (!status.ok()) {
+      ReleaseLanes();  // Allocation failure must not leave partial backing.
+      return status;
+    }
+    live_bytes_.store(arena_bytes_ * lanes_.size(), std::memory_order_release);
+    return Status::Ok();
+  }
+
   static cudaError_t InputsConsumed(void* opaque, cudaEvent_t event) {
     auto& batch = *static_cast<Batch*>(opaque);
     auto& encoder = *batch.encoder;
@@ -320,9 +370,14 @@ class CudaResidentEncoder final : public ResidentEncoder {
   Status Run(Batch& batch, GJXLBuffer* outputs) {
     batch.results.resize(batch.count);
     std::unique_lock lock(mutex_);
+    Status status = AcquireLanes();
+    if (!status.ok()) return status;
+    ++active_batches_;
     Enqueue(&batch);
     work_.notify_all();
     batch.ready.wait(lock, [&] { return batch.completed == batch.count; });
+    if (--active_batches_ == 0 && release_requested_.load(std::memory_order_acquire))
+      ReleaseLanes();
     if (!batch.status.ok()) return batch.status;
     for (size_t i = 0; i < batch.count; ++i) {
       outputs[i] = batch.results[i];
@@ -347,8 +402,15 @@ class CudaResidentEncoder final : public ResidentEncoder {
       bool skip;
       {
         std::unique_lock lock(mutex_);
-        work_.wait(lock, [&] { return stopping_ || queue_head_ != nullptr; });
+        work_.wait(lock, [&] {
+          return stopping_ || queue_head_ != nullptr ||
+            (active_batches_ == 0 && release_requested_.load(std::memory_order_acquire));
+        });
         if (stopping_) return;
+        if (active_batches_ == 0 && release_requested_.load(std::memory_order_acquire)) {
+          ReleaseLanes();
+          continue;
+        }
         batch = queue_head_;
         queue_head_ = batch->queued_next;
         if (queue_head_ == nullptr) queue_tail_ = nullptr;
@@ -369,6 +431,10 @@ class CudaResidentEncoder final : public ResidentEncoder {
   }
 
   int device_ = 0;
+  size_t arena_bytes_ = 0;
+  size_t active_batches_ = 0;  // Protected by mutex_. Includes queued batches.
+  std::atomic<uint64_t> live_bytes_{0};
+  std::atomic<bool> release_requested_{false};
   cudaStream_t event_stream_ = nullptr;
   cudaEvent_t host_wait_ = nullptr;
   std::mutex event_mutex_;

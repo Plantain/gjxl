@@ -269,6 +269,17 @@ GJXL_API GJXLResult gjxl_encoder_create(const GJXLEncoderCreateOptions* options,
                                        GJXLEncoder** encoder) GJXL_NOEXCEPT;
 /// The caller must finish all encode calls before destroying the encoder.
 GJXL_API void gjxl_encoder_destroy(GJXLEncoder* encoder) GJXL_NOEXCEPT;
+/// Releases private device arenas when idle, retaining workers and calibration.
+/// Never waits for a busy encode: that encode releases arenas on completion.
+/// released_bytes receives the bytes released by this call (zero if deferred).
+/// The next nonempty batch reacquires the same bounded arenas without calibration.
+/// CUDA primary-context and loaded-module storage is shared and is not released.
+GJXL_API GJXLResult gjxl_encoder_release_device_memory(
+  GJXLEncoder* encoder, uint64_t* released_bytes) GJXL_NOEXCEPT;
+/// Current private arena backing, excluding shared CUDA context/module storage.
+/// Thread-safe and nonblocking; the configured cap is unchanged by release.
+GJXL_API GJXLResult gjxl_encoder_device_memory_bytes(
+  GJXLEncoder* encoder, uint64_t* live_bytes) GJXL_NOEXCEPT;
 /// Synchronous, thread-safe, round-robin across concurrent batches. Outputs
 /// must be empty; free successful buffers with gjxl_buffer_free. On failure
 /// every output stays empty and all submitted input reads are complete.

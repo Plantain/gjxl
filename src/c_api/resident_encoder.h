@@ -9,6 +9,8 @@ namespace gjxl::c_api_internal {
 class ResidentEncoder {
  public:
   virtual ~ResidentEncoder() = default;
+  virtual Status ReleaseDeviceMemory(uint64_t* released_bytes) = 0;
+  virtual uint64_t DeviceMemoryBytes() const = 0;
   virtual Status EncodeDevice(const GJXLDeviceBatch&, VarDctEncodingOptions,
                               GJXLBuffer*) = 0;
   virtual Status EncodeHost(const GJXLImageView*, size_t, VarDctEncodingOptions,

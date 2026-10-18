@@ -748,6 +748,25 @@ void gjxl_encoder_destroy(GJXLEncoder* encoder) noexcept {
   delete encoder;
 }
 
+GJXLResult gjxl_encoder_release_device_memory(
+  GJXLEncoder* encoder, uint64_t* released_bytes) noexcept {
+  return Guard([&]() -> GJXLResult {
+    if (encoder == nullptr || released_bytes == nullptr)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid resident release arguments");
+    return TranslateStatus(encoder->value->ReleaseDeviceMemory(released_bytes));
+  });
+}
+
+GJXLResult gjxl_encoder_device_memory_bytes(
+  GJXLEncoder* encoder, uint64_t* live_bytes) noexcept {
+  return Guard([&]() -> GJXLResult {
+    if (encoder == nullptr || live_bytes == nullptr)
+      return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid resident memory query");
+    *live_bytes = encoder->value->DeviceMemoryBytes();
+    return GJXL_OK;
+  });
+}
+
 GJXLResult gjxl_encoder_encode_device(GJXLEncoder* encoder,
   const GJXLDeviceBatch* batch, const GJXLEncoderOptions* options,
   GJXLBuffer* outputs) noexcept {
