@@ -2845,10 +2845,19 @@ class CudaPreparedResidentAqEvaluation final
   Status FinishFrameAssembly(const Quantizer& quantizer, VarDctEncoderFrame* frame,
       OverwriteArray<T>* dense, vardct_frame_internal::SparseAcStorage<T>* sparse) {
     if (!std::ranges::all_of(raw_readback_, [](int32_t value) {
-          return value >= 1 && value <= kMaxRawQuant;
+          return value >= 1 && value <= kMaxRawQuant + 1;
         })) {
       return Status::DeviceError(
           "CUDA resident AQ raw-quant readback is invalid");
+    }
+    // The sparse-Y adjustment can increment an initial 256 to 257 for a
+    // larger-than-8x8 transform. Pinned libjxl permits that encoder decision,
+    // then clamps AC metadata to [1, 256] in dec_modular.cc. Canonicalize only
+    // that value at publication, preserving the same decoded quant field and
+    // coefficients. Clamping during AQ would change intermediate scores and
+    // potentially the bytes of tiles whose final field was already valid.
+    for (int32_t& value : raw_readback_) {
+      if (value == kMaxRawQuant + 1) value = kMaxRawQuant;
     }
     FrameGeometry geometry;
     Status status = FrameGeometry::Create(source_extent_, &geometry);
