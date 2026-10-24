@@ -242,7 +242,8 @@ typedef struct {
   int64_t channel_stride;
   int64_t pixel_stride;
   int64_t row_stride;
-  /// Valid dimensions in [1, 512]. Output is always zero-padded to 512x512.
+  /// Valid dimensions in [1, coding extent]. Output is zero-padded to the
+  /// coding extent: 512x512, or the *_extent entry points' coding_extent.
   uint32_t width, height;
 } GJXLDeviceTileRGB8;
 
@@ -291,6 +292,16 @@ GJXL_API GJXLResult gjxl_encoder_encode_device(
 GJXL_API GJXLResult gjxl_encoder_encode_host(
   GJXLEncoder* encoder, const GJXLImageView* tiles, size_t count,
   const GJXLEncoderOptions* options, GJXLBuffer* outputs) GJXL_NOEXCEPT;
+/// As the calls above, writing coding_extent x coding_extent codestreams
+/// (a multiple of 64 up to 512; 512 is identical to the calls above). Every
+/// tile's valid dimensions must fit the extent.
+GJXL_API GJXLResult gjxl_encoder_encode_device_extent(
+  GJXLEncoder* encoder, const GJXLDeviceBatch* batch, uint32_t coding_extent,
+  const GJXLEncoderOptions* options, GJXLBuffer* outputs) GJXL_NOEXCEPT;
+GJXL_API GJXLResult gjxl_encoder_encode_host_extent(
+  GJXLEncoder* encoder, const GJXLImageView* tiles, size_t count,
+  uint32_t coding_extent, const GJXLEncoderOptions* options,
+  GJXLBuffer* outputs) GJXL_NOEXCEPT;
 
 /// Initializes context options and defaults to GJXL_BACKEND_AUTO.
 /// caller_size must describe the complete caller allocation and fit uint32_t.

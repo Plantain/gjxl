@@ -11,10 +11,11 @@ class ResidentEncoder {
   virtual ~ResidentEncoder() = default;
   virtual Status ReleaseDeviceMemory(uint64_t* released_bytes) = 0;
   virtual uint64_t DeviceMemoryBytes() const = 0;
-  virtual Status EncodeDevice(const GJXLDeviceBatch&, VarDctEncodingOptions,
-                              GJXLBuffer*) = 0;
-  virtual Status EncodeHost(const GJXLImageView*, size_t, VarDctEncodingOptions,
-                            GJXLBuffer*) = 0;
+  // extent is the square codestream size: 512, or a multiple of 64 below it.
+  virtual Status EncodeDevice(const GJXLDeviceBatch&, uint32_t extent,
+                              VarDctEncodingOptions, GJXLBuffer*) = 0;
+  virtual Status EncodeHost(const GJXLImageView*, size_t, uint32_t extent,
+                            VarDctEncodingOptions, GJXLBuffer*) = 0;
 };
 Status CreateResidentEncoder(const GJXLEncoderCreateOptions& options,
                              std::unique_ptr<ResidentEncoder>* out);

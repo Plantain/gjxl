@@ -49,9 +49,15 @@ Status ValidateOutputs(size_t count, GJXLBuffer* outputs) {
   return Status::Ok();
 }
 
-Status ValidateTile(const GJXLDeviceTileRGB8& tile, int device) {
+Status ValidateExtent(uint32_t extent) {
+  if (extent < 64 || extent > 512 || extent % 64 != 0)
+    return Status::InvalidArgument("Resident coding extent must be a multiple of 64 up to 512");
+  return Status::Ok();
+}
+
+Status ValidateTile(const GJXLDeviceTileRGB8& tile, int device, uint32_t extent) {
   if (tile.struct_size < sizeof(tile) || tile.device_pixels == nullptr ||
-      tile.width == 0 || tile.width > 512 || tile.height == 0 || tile.height > 512 ||
+      tile.width == 0 || tile.width > extent || tile.height == 0 || tile.height > extent ||
       tile.channel_stride <= 0 || tile.pixel_stride <= 0 || tile.row_stride <= 0)
     return Status::InvalidArgument("Invalid device RGB8 tile dimensions or strides");
   // Bound every multiply and sum used by the kernel's signed address math.
@@ -94,6 +100,7 @@ class CudaResidentEncoder final : public ResidentEncoder {
     const GJXLDeviceTileRGB8* device_tiles = nullptr;
     const GJXLImageView* host_tiles = nullptr;
     size_t count = 0, next = 0, completed = 0, inputs_remaining = 0;
+    uint32_t extent = 512;
     cudaEvent_t producer = nullptr, consumed = nullptr;
     VarDctEncodingOptions options;
     std::vector<GJXLBuffer> results;
@@ -204,9 +211,11 @@ class CudaResidentEncoder final : public ResidentEncoder {
     return live_bytes_.load(std::memory_order_acquire);
   }
 
-  Status EncodeDevice(const GJXLDeviceBatch& input, VarDctEncodingOptions options,
-                       GJXLBuffer* outputs) override {
+  Status EncodeDevice(const GJXLDeviceBatch& input, uint32_t extent,
+                       VarDctEncodingOptions options, GJXLBuffer* outputs) override {
     Status status = ValidateOutputs(input.count, outputs);
+    if (!status.ok()) return status;
+    status = ValidateExtent(extent);
     if (!status.ok()) return status;
     if (input.count != 0 && input.tiles == nullptr)
       return Status::InvalidArgument("Device batch tiles must not be null");
@@ -214,12 +223,13 @@ class CudaResidentEncoder final : public ResidentEncoder {
     if (selected.status() != cudaSuccess)
       return CudaRuntimeStatus(selected.status(), "Select resident batch device");
     for (size_t i = 0; i < input.count; ++i) {
-      status = ValidateTile(input.tiles[i], device_);
+      status = ValidateTile(input.tiles[i], device_, extent);
       if (!status.ok()) return status;
     }
     Batch batch;
     batch.encoder = this;
     batch.device_tiles = input.tiles;
+    batch.extent = extent;
     batch.count = batch.inputs_remaining = input.count;
     batch.producer = reinterpret_cast<cudaEvent_t>(input.producer_event);
     batch.consumed = reinterpret_cast<cudaEvent_t>(input.consumed_event);
@@ -236,17 +246,19 @@ class CudaResidentEncoder final : public ResidentEncoder {
     return Run(batch, outputs);
   }
 
-  Status EncodeHost(const GJXLImageView* tiles, size_t count, VarDctEncodingOptions options,
-                     GJXLBuffer* outputs) override {
+  Status EncodeHost(const GJXLImageView* tiles, size_t count, uint32_t extent,
+                     VarDctEncodingOptions options, GJXLBuffer* outputs) override {
     Status status = ValidateOutputs(count, outputs);
+    if (!status.ok()) return status;
+    status = ValidateExtent(extent);
     if (!status.ok()) return status;
     if (count != 0 && tiles == nullptr)
       return Status::InvalidArgument("Host batch tiles must not be null");
     for (size_t i = 0; i < count; ++i) {
       const auto& t = tiles[i];
-      if (t.struct_size < sizeof(t) || t.width > 512 || t.height > 512 ||
+      if (t.struct_size < sizeof(t) || t.width > extent || t.height > extent ||
           t.pixel_format != GJXL_PIXEL_FORMAT_RGB8_SRGB)
-        return Status::InvalidArgument("Resident host input requires RGB8 tiles up to 512x512");
+        return Status::InvalidArgument("Resident host input requires RGB8 tiles within the extent");
       status = ValidatePackedSrgbImage({static_cast<const uint8_t*>(t.pixels),
         t.pixels_size, t.width, t.height, t.row_stride_bytes, PackedPixelFormat::kRgb8Srgb});
       if (!status.ok()) return status;
@@ -255,6 +267,7 @@ class CudaResidentEncoder final : public ResidentEncoder {
     Batch batch;
     batch.encoder = this;
     batch.host_tiles = tiles;
+    batch.extent = extent;
     batch.count = count;
     batch.options = std::move(options);
     return Run(batch, outputs);
@@ -313,6 +326,7 @@ class CudaResidentEncoder final : public ResidentEncoder {
   Status RunOne(Lane& lane, Batch& batch, size_t index, GJXLBuffer* output) {
     return CatchStatus([&]() -> Status {
       Rgb8Preparation preparation;
+      preparation.extent = batch.extent;
       preparation.input.srgb_to_linear = static_cast<const float*>(
         static_cast<CudaBuffer*>(lane.table.get())->pointer());
       if (batch.host_tiles != nullptr) {
@@ -351,7 +365,8 @@ class CudaResidentEncoder final : public ResidentEncoder {
       input.backend = lane.backend.get();
       // Only geometry is passed to host-side resident-policy validation. No
       // host RGB storage exists and no CPU operation may dereference this view.
-      for (auto& plane : input.linear_rgb.plane) plane = {nullptr, {512, 512}, 512};
+      for (auto& plane : input.linear_rgb.plane)
+        plane = {nullptr, {batch.extent, batch.extent}, batch.extent};
       Status status = PrepareCudaRgb8Input(static_cast<CudaBackend&>(*lane.backend),
                                             preparation, &input.owner);
       if (!status.ok()) return status;

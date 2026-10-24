@@ -210,15 +210,19 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
   }
 
   Status PrepareRgb8(const Rgb8Preparation& preparation) {
+    const uint32_t extent = preparation.extent;
+    if (extent == 0 || extent > 512 || extent % 8 != 0 ||
+        preparation.input.width > extent || preparation.input.height > extent)
+      return Status::InvalidArgument("RGB8 input exceeds its coding extent");
     size_t capacity = 0;
-    Status status = ComputeCudaInputStoragePlan({512, 512}, &capacity);
+    Status status = ComputeCudaInputStoragePlan({extent, extent}, &capacity);
     if (!status.ok()) return status;
     status = arena_.Prepare(*backend_, capacity);
     if (!status.ok()) return status;
     for (auto* image : {&original_, &coding_}) {
       for (auto& plane : *image) {
-        status = arena_.AllocatePlane(DeviceElementType::kF32, {512, 512},
-                                       512, kArenaAlignment, &plane);
+        status = arena_.AllocatePlane(DeviceElementType::kF32, {extent, extent},
+                                       extent, kArenaAlignment, &plane);
         if (!status.ok()) return status;
       }
     }
@@ -228,7 +232,7 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
     Context context{
       .owner = this,
       .linear_rgb = {},
-      .params = {512, 512, 512, 512, 512, 512, 255.0f,
+      .params = {extent, extent, extent, extent, extent, extent, 255.0f,
                  preparation.compute_matrix_scale_stats ? 1u : 0u},
       .host_results = {},
       .rgb8 = &preparation,
@@ -309,7 +313,7 @@ class CudaPreparedLinearRgbOpsin final : public PreparedGpuLinearRgbOpsin,
           backend.state_->stream);
       }
       if (status == cudaSuccess)
-        status = LaunchCudaRgb8ToOpsin(p.input,
+        status = LaunchCudaRgb8ToOpsin(p.input, p.extent,
           {Pointer<float>(self.original_[0]), Pointer<float>(self.original_[1]),
            Pointer<float>(self.original_[2])},
           {Pointer<float>(self.coding_[0]), Pointer<float>(self.coding_[1]),

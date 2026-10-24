@@ -767,30 +767,44 @@ GJXLResult gjxl_encoder_device_memory_bytes(
   });
 }
 
-GJXLResult gjxl_encoder_encode_device(GJXLEncoder* encoder,
-  const GJXLDeviceBatch* batch, const GJXLEncoderOptions* options,
-  GJXLBuffer* outputs) noexcept {
+GJXLResult gjxl_encoder_encode_device_extent(GJXLEncoder* encoder,
+  const GJXLDeviceBatch* batch, uint32_t coding_extent,
+  const GJXLEncoderOptions* options, GJXLBuffer* outputs) noexcept {
   return Guard([&]() -> GJXLResult {
     if (encoder == nullptr || batch == nullptr || batch->struct_size < sizeof(*batch))
       return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Invalid resident device batch");
     gjxl::VarDctEncodingOptions encoding;
     GJXLResult result = ParseEncodingOptions(options, &encoding);
     if (result != GJXL_OK) return result;
-    return TranslateStatus(encoder->value->EncodeDevice(*batch, encoding, outputs));
+    return TranslateStatus(
+      encoder->value->EncodeDevice(*batch, coding_extent, encoding, outputs));
   });
 }
 
-GJXLResult gjxl_encoder_encode_host(GJXLEncoder* encoder,
-  const GJXLImageView* tiles, size_t count, const GJXLEncoderOptions* options,
+GJXLResult gjxl_encoder_encode_device(GJXLEncoder* encoder,
+  const GJXLDeviceBatch* batch, const GJXLEncoderOptions* options,
   GJXLBuffer* outputs) noexcept {
+  return gjxl_encoder_encode_device_extent(encoder, batch, 512, options, outputs);
+}
+
+GJXLResult gjxl_encoder_encode_host_extent(GJXLEncoder* encoder,
+  const GJXLImageView* tiles, size_t count, uint32_t coding_extent,
+  const GJXLEncoderOptions* options, GJXLBuffer* outputs) noexcept {
   return Guard([&]() -> GJXLResult {
     if (encoder == nullptr)
       return Fail(GJXL_ERROR_INVALID_ARGUMENT, "Resident encoder must not be null");
     gjxl::VarDctEncodingOptions encoding;
     GJXLResult result = ParseEncodingOptions(options, &encoding);
     if (result != GJXL_OK) return result;
-    return TranslateStatus(encoder->value->EncodeHost(tiles, count, encoding, outputs));
+    return TranslateStatus(
+      encoder->value->EncodeHost(tiles, count, coding_extent, encoding, outputs));
   });
+}
+
+GJXLResult gjxl_encoder_encode_host(GJXLEncoder* encoder,
+  const GJXLImageView* tiles, size_t count, const GJXLEncoderOptions* options,
+  GJXLBuffer* outputs) noexcept {
+  return gjxl_encoder_encode_host_extent(encoder, tiles, count, 512, options, outputs);
 }
 
 GJXLResult gjxl_modular_options_init(GJXLModularOptions *options, size_t caller_size) noexcept {

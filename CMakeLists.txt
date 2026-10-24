@@ -3048,6 +3048,12 @@ if(GJXL_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/testdata/satellite/raw-quant-257.rgb)
     set_tests_properties(cuda_raw_quant_readback PROPERTIES SKIP_RETURN_CODE 77)
 
+    add_executable(gjxl_cuda_resident_extent_test tests/cuda_resident_extent_test.cpp)
+    target_link_libraries(gjxl_cuda_resident_extent_test PRIVATE gjxl_c CUDA::cudart)
+    add_test(NAME cuda_resident_extent COMMAND gjxl_cuda_resident_extent_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/testdata/satellite/raw-quant-257.rgb)
+    set_tests_properties(cuda_resident_extent PROPERTIES SKIP_RETURN_CODE 77)
+
     add_executable(gjxl_cuda_resident_dct_test tests/cuda_resident_dct_test.cpp)
     target_link_libraries(gjxl_cuda_resident_dct_test PRIVATE gjxl_cuda)
     target_include_directories(gjxl_cuda_resident_dct_test PRIVATE ${CUDAToolkit_INCLUDE_DIRS})

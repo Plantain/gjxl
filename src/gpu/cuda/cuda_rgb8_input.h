@@ -9,6 +9,8 @@ class CudaBackend;
 
 struct Rgb8Preparation {
   CudaRgb8Input input;
+  // Square coding extent: the codestream size, zero-padded beyond the input.
+  uint32_t extent = 512;
   // Non-null selects the host adapter; staging belongs to the resident lane.
   const uint8_t* host_pixels = nullptr;
   size_t host_row_stride = 0;

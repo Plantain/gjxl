@@ -862,10 +862,12 @@ cudaError_t LaunchCudaLinearRgbToOpsin(
 }
 
 cudaError_t LaunchCudaRgb8ToOpsin(
-  CudaRgb8Input input, std::array<float*, 3> linear,
+  CudaRgb8Input input, uint32_t extent, std::array<float*, 3> linear,
   std::array<float*, 3> output, unsigned int* error, cudaStream_t stream) {
-  const CudaLinearRgbToOpsinParams params{512, 512, 512, 512, 512, 512, 255.0f, 1};
-  LinearRgbToOpsinKernel<true><<<1024, kThreads, 0, stream>>>(
+  const CudaLinearRgbToOpsinParams params{
+    extent, extent, extent, extent, extent, extent, 255.0f, 1};
+  const unsigned int blocks = (extent * extent + kThreads - 1) / kThreads;  // 1024 for 512
+  LinearRgbToOpsinKernel<true><<<blocks, kThreads, 0, stream>>>(
     nullptr, nullptr, nullptr, output[0], output[1], output[2], error, params,
     input, linear[0], linear[1], linear[2]);
   return cudaGetLastError();
